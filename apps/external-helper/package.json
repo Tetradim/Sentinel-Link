@@ -1,0 +1,9 @@
+{
+  "name": "@extension-external/helper",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@extension-external/shared": "file:../../packages/shared"
+  }
+}

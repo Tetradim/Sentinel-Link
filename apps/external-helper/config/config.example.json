@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "retry": {
+    "maxAttempts": 3,
+    "baseDelayMs": 2000
+  },
+  "sendPacingMs": 1500,
+  "mappings": [
+    {
+      "id": "alerts-to-bot-test",
+      "enabled": true,
+      "sourceUrl": "https://discord.com/channels/111111111111111111/222222222222222222",
+      "destinationUrls": [
+        "https://discord.com/channels/333333333333333333/444444444444444444"
+      ],
+      "prefix": "[copied-alert]"
+    }
+  ]
+}
