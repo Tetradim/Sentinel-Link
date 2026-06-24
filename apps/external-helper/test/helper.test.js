@@ -12,6 +12,14 @@ const sourceUrl = "https://discord.com/channels/111111111111111111/2222222222222
 const firstDestinationUrl = "https://discord.com/channels/333333333333333333/444444444444444444";
 const secondDestinationUrl = "https://discord.com/channels/333333333333333333/555555555555555555";
 const authToken = "test-token";
+const maxFetchPortAttempts = 25;
+const fetchBlockedPorts = new Set([
+  0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101,
+  102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389,
+  427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636,
+  989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665,
+  6666, 6667, 6668, 6669, 6679, 6697, 10080
+]);
 
 const sampleConfig = {
   enabled: true,
@@ -51,13 +59,43 @@ const singleDestinationConfig = {
 };
 
 async function startHelperHttpServer(store, config = sampleConfig) {
-  const server = createServer({ config, store, authToken });
+  let lastBlockedPort = "";
+  for (let attempt = 0; attempt < maxFetchPortAttempts; attempt += 1) {
+    const server = createServer({ config, store, authToken });
+    await listenOnEphemeralPort(server);
+    const { port } = server.address();
+    if (!isFetchBlockedPort(port)) {
+      return { server, baseUrl: `http://127.0.0.1:${port}` };
+    }
+
+    lastBlockedPort = port;
+    await closeHelperHttpServer(server);
+  }
+
+  throw new Error(`Could not start helper HTTP test server on a fetch-allowed port; last blocked port: ${lastBlockedPort}`);
+}
+
+async function listenOnEphemeralPort(server) {
   await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    function cleanup() {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    }
+
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+
+    function onListening() {
+      cleanup();
+      resolve();
+    }
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
   });
-  const { port } = server.address();
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
 }
 
 async function closeHelperHttpServer(server) {
@@ -71,6 +109,10 @@ async function closeHelperHttpServer(server) {
 
 function authHeaders(headers = {}) {
   return { "x-helper-token": authToken, ...headers };
+}
+
+function isFetchBlockedPort(port) {
+  return Number.isInteger(port) && fetchBlockedPorts.has(port);
 }
 
 test("nextRetryDelayMs doubles from base delay by retry attempt", () => {
@@ -281,6 +323,11 @@ test("store marks failed job for retry twice and final failure on third failed a
 test("createServer requires a non-empty helper auth token", () => {
   assert.throws(() => createServer({ config: sampleConfig, store: {}, authToken: "" }), /authToken is required/);
   assert.throws(() => createServer({ config: sampleConfig, store: {} }), /authToken is required/);
+});
+
+test("isFetchBlockedPort identifies browser blocked ports", () => {
+  assert.equal(isFetchBlockedPort(6000), true);
+  assert.equal(isFetchBlockedPort(17654), false);
 });
 
 test("HTTP API enqueues, claims, records, and reports helper jobs", async () => {
