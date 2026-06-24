@@ -1,23 +1,35 @@
 const helperBaseUrl = "http://127.0.0.1:17654";
 const clientId = "copy-repost-extension";
-const pollMs = 1500;
+const pollAlarmName = "copy-repost-poll";
+const pollAlarmPeriodMinutes = 1;
+const configCacheTtlMs = 60_000;
 
 let pollInFlight = false;
+let sourceConfigCache = null;
+
+void ensurePollAlarm();
 
 chrome.runtime.onInstalled.addListener(() => {
-  initializeStorageDefaults().then(() => {
+  Promise.all([initializeStorageDefaults(), ensurePollAlarm()]).then(() => {
     void pollHelper();
   });
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void pollHelper();
+  ensurePollAlarm().then(() => {
+    void pollHelper();
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "submit-payload") {
     submitPayload(message.payload)
-      .then((result) => sendResponse(result))
+      .then((result) => {
+        sendResponse(result);
+        if (result?.ok && !result?.ignored) {
+          void pollHelper();
+        }
+      })
       .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
     return true;
   }
@@ -25,9 +37,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-setInterval(() => {
-  void pollHelper();
-}, pollMs);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === pollAlarmName) {
+    void pollHelper();
+  }
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  if (changes.helperToken || changes.enabled) {
+    sourceConfigCache = null;
+    void ensurePollAlarm();
+    void pollHelper();
+  }
+});
 
 async function initializeStorageDefaults() {
   const state = await chrome.storage.local.get(["enabled", "helperToken"]);
@@ -52,6 +78,22 @@ async function submitPayload(payload) {
   if (!enabled) {
     await setStatus("disabled");
     return { ok: false, reason: "extension disabled" };
+  }
+
+  let sourceConfig;
+  try {
+    sourceConfig = await getEnabledSourceConfig();
+  } catch (error) {
+    const reason = readableError(error);
+    const status = reason === "missing helper token" ? "missing helper token" : `config unavailable: ${reason}`;
+    await setStatus(status);
+    return { ok: false, reason: status };
+  }
+
+  if (!isAllowedSourcePayload(payload, sourceConfig)) {
+    const source = payload?.sourceChannelId || payload?.sourceUrl || "unknown source";
+    await setStatus(`ignored non-source channel: ${source}`);
+    return { ok: true, ignored: true, reason: "ignored non-source channel" };
   }
 
   const result = await helperFetch("/events", {
@@ -94,6 +136,18 @@ async function pollHelper() {
   } finally {
     pollInFlight = false;
   }
+}
+
+async function ensurePollAlarm() {
+  const existing = await chrome.alarms.get(pollAlarmName);
+  if (existing?.periodInMinutes === pollAlarmPeriodMinutes) {
+    return;
+  }
+
+  await chrome.alarms.create(pollAlarmName, {
+    delayInMinutes: pollAlarmPeriodMinutes,
+    periodInMinutes: pollAlarmPeriodMinutes
+  });
 }
 
 async function processJob(job) {
@@ -196,6 +250,60 @@ async function reportJobResult(jobId, body) {
   });
 }
 
+async function getEnabledSourceConfig() {
+  const { helperToken = "" } = await chrome.storage.local.get("helperToken");
+  const token = normalizeToken(helperToken);
+  const now = Date.now();
+  if (sourceConfigCache && sourceConfigCache.token === token && sourceConfigCache.expiresAt > now) {
+    return sourceConfigCache;
+  }
+
+  const config = await helperFetch("/config");
+  const enabledSources = extractEnabledSources(config);
+  sourceConfigCache = {
+    token,
+    expiresAt: now + configCacheTtlMs,
+    ...enabledSources
+  };
+  return sourceConfigCache;
+}
+
+function extractEnabledSources(config) {
+  const sourceChannelIds = new Set();
+  const sourceUrls = new Set();
+  if (config?.enabled === false || !Array.isArray(config?.mappings)) {
+    return { sourceChannelIds, sourceUrls };
+  }
+
+  for (const mapping of config.mappings) {
+    if (!mapping || mapping.enabled === false) {
+      continue;
+    }
+
+    const sourceChannelId = normalizeSourceChannelId(mapping.sourceChannelId);
+    if (sourceChannelId) {
+      sourceChannelIds.add(sourceChannelId);
+    }
+
+    const sourceUrl = discordChannelPrefix(mapping.sourceUrl);
+    if (sourceUrl) {
+      sourceUrls.add(sourceUrl);
+    }
+  }
+
+  return { sourceChannelIds, sourceUrls };
+}
+
+function isAllowedSourcePayload(payload, sourceConfig) {
+  const sourceChannelId = normalizeSourceChannelId(payload?.sourceChannelId);
+  if (sourceChannelId && sourceConfig.sourceChannelIds.has(sourceChannelId)) {
+    return true;
+  }
+
+  const sourceUrl = discordChannelPrefix(payload?.sourceUrl);
+  return Boolean(sourceUrl && sourceConfig.sourceUrls.has(sourceUrl));
+}
+
 async function helperFetch(path, options = {}) {
   const { helperToken = "" } = await chrome.storage.local.get("helperToken");
   const token = normalizeToken(helperToken);
@@ -262,6 +370,10 @@ function normalizeToken(token) {
   return typeof token === "string" ? token.trim() : "";
 }
 
+function normalizeSourceChannelId(sourceChannelId) {
+  return typeof sourceChannelId === "string" ? sourceChannelId.trim() : "";
+}
+
 function isDiscordChannelUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
@@ -281,7 +393,9 @@ function discordChannelPrefix(rawUrl) {
   try {
     const url = new URL(rawUrl);
     const match = url.pathname.match(/^\/channels\/(\d+)\/(\d+)/);
-    return match ? `${url.origin}/channels/${match[1]}/${match[2]}` : "";
+    return url.protocol === "https:" && url.hostname === "discord.com" && match
+      ? `${url.origin}/channels/${match[1]}/${match[2]}`
+      : "";
   } catch {
     return "";
   }

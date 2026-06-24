@@ -112,6 +112,10 @@
       return { ok: false, reason: "job messageText is required" };
     }
 
+    if (!sameDiscordChannel(location.href, job.destinationUrl)) {
+      return { ok: false, reason: "Destination channel mismatch" };
+    }
+
     const editor = await waitForComposer();
     if (composerText(editor).trim()) {
       return { ok: false, reason: "Discord composer is not empty" };
@@ -127,18 +131,16 @@
     await delay(150);
 
     if (clickSendButton()) {
-      return {
-        ok: true,
-        degradation: degradationForJob(job)
-      };
+      if (await waitForComposerClear(editor, job.messageText)) {
+        return successfulPostResult(job);
+      }
+
+      return { ok: false, reason: "Unable to verify Discord send after button click" };
     }
 
     pressEnter(editor);
     if (await waitForComposerClear(editor, job.messageText)) {
-      return {
-        ok: true,
-        degradation: degradationForJob(job)
-      };
+      return successfulPostResult(job);
     }
 
     return { ok: false, reason: "Unable to verify Discord send after Enter fallback" };
@@ -263,12 +265,37 @@
     return `${payload.sourceChannelId || "unknown"}:${payload.messageId || ""}`;
   }
 
+  function successfulPostResult(job) {
+    return {
+      ok: true,
+      degradation: degradationForJob(job)
+    };
+  }
+
   function degradationForJob(job) {
     const degradation = [];
     if (Array.isArray(job.payload?.attachmentUrls) && job.payload.attachmentUrls.length > 0) {
       degradation.push("attachments_included_as_urls");
     }
     return degradation;
+  }
+
+  function sameDiscordChannel(currentUrl, destinationUrl) {
+    const currentChannel = discordChannelPrefix(currentUrl);
+    const destinationChannel = discordChannelPrefix(destinationUrl);
+    return Boolean(currentChannel && destinationChannel && currentChannel === destinationChannel);
+  }
+
+  function discordChannelPrefix(rawUrl) {
+    try {
+      const url = new URL(rawUrl);
+      const match = url.pathname.match(/^\/channels\/(\d+)\/(\d+)/);
+      return url.protocol === "https:" && url.hostname === "discord.com" && match
+        ? `${url.origin}/channels/${match[1]}/${match[2]}`
+        : "";
+    } catch {
+      return "";
+    }
   }
 
   function isElement(node) {
