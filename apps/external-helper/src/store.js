@@ -50,13 +50,16 @@ export async function createJsonStore(filePath) {
         }
       }
 
+      const previousClientId = job.clientId;
       job.status = "retry_wait";
       job.dueAt = now.toISOString();
+      job.clientId = "";
       job.leaseExpiresAt = "";
       job.updatedAt = now.toISOString();
       appendEvent(
         "retry_wait",
         jobEventFields(job, {
+          clientId: previousClientId,
           dueAt: job.dueAt,
           reason: "lease_expired"
         }),
@@ -204,7 +207,11 @@ export async function createJsonStore(filePath) {
         throw new Error(`Job must be in progress before recording result: ${jobId}`);
       }
 
-      if (clientId && job.clientId && job.clientId !== clientId) {
+      if (!clientId) {
+        throw new Error(`clientId is required to record job result: ${jobId}`);
+      }
+
+      if (job.clientId !== clientId) {
         throw new Error(`Job ${jobId} is leased to a different client`);
       }
 
@@ -240,6 +247,7 @@ export async function createJsonStore(filePath) {
           }),
           now
         );
+        job.clientId = "";
       } else {
         job.status = "failed";
         job.completedAt = now.toISOString();

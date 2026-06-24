@@ -140,9 +140,47 @@ test("store rejects terminal result for a queued job before claim", async () => 
       store.recordJobResult({
         jobId: snapshot.jobs[0].id,
         status: "sent",
+        clientId: "client-1",
         now: new Date("2026-06-24T17:00:00.000Z")
       }),
       /in progress/
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("store rejects stale claimant after lease expiry and reclaim", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-stale-claimant-"));
+  try {
+    const statePath = join(dir, "state.json");
+    const store = await createJsonStore(statePath);
+    await store.enqueueAlert(singleDestinationConfig, samplePayload);
+
+    const firstClaim = await store.claimNextJob("client-1", new Date("2030-01-01T17:00:00.000Z"));
+
+    const reloaded = await createJsonStore(statePath);
+    const secondClaim = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:00:31.000Z"));
+    assert.equal(secondClaim.id, firstClaim.id);
+    assert.equal(secondClaim.clientId, "client-2");
+
+    await assert.rejects(
+      reloaded.recordJobResult({
+        jobId: firstClaim.id,
+        status: "sent",
+        now: new Date("2030-01-01T17:00:32.000Z")
+      }),
+      /clientId/
+    );
+
+    await assert.rejects(
+      reloaded.recordJobResult({
+        jobId: firstClaim.id,
+        status: "sent",
+        clientId: "client-1",
+        now: new Date("2030-01-01T17:00:32.000Z")
+      }),
+      /different client/
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -164,12 +202,14 @@ test("store marks failed job for retry twice and final failure on third failed a
       status: "failed",
       reason: "composer unavailable",
       retry: sampleConfig.retry,
+      clientId: "client-1",
       now: firstClaimTime
     });
 
     let snapshot = await store.snapshot();
     assert.equal(snapshot.jobs[0].status, "retry_wait");
     assert.equal(snapshot.jobs[0].dueAt, "2030-01-01T00:00:02.000Z");
+    assert.equal(snapshot.jobs[0].clientId, "");
 
     const secondClaimTime = new Date("2030-01-01T00:00:02.000Z");
     const secondClaim = await store.claimNextJob("client-1", secondClaimTime);
@@ -181,12 +221,14 @@ test("store marks failed job for retry twice and final failure on third failed a
       status: "failed",
       reason: "composer unavailable",
       retry: sampleConfig.retry,
+      clientId: "client-1",
       now: secondClaimTime
     });
 
     snapshot = await store.snapshot();
     assert.equal(snapshot.jobs[0].status, "retry_wait");
     assert.equal(snapshot.jobs[0].dueAt, "2030-01-01T00:00:06.000Z");
+    assert.equal(snapshot.jobs[0].clientId, "");
 
     const thirdClaimTime = new Date("2030-01-01T00:00:06.000Z");
     const thirdClaim = await store.claimNextJob("client-1", thirdClaimTime);
@@ -198,6 +240,7 @@ test("store marks failed job for retry twice and final failure on third failed a
       status: "failed",
       reason: "composer unavailable",
       retry: sampleConfig.retry,
+      clientId: "client-1",
       now: thirdClaimTime
     });
 
