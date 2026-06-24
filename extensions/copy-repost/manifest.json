@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Discord Copy Repost Helper",
+  "version": "0.1.0",
+  "description": "Copies visible Discord alerts from configured channels and reposts them through the visible Discord web composer.",
+  "permissions": ["tabs", "storage", "scripting"],
+  "host_permissions": [
+    "https://discord.com/channels/*",
+    "http://127.0.0.1:17654/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://discord.com/channels/*"],
+      "js": ["src/parser.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Copy Repost Helper"
+  }
+}
