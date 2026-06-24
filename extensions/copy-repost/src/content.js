@@ -126,15 +126,22 @@
 
     await delay(150);
 
-    const sent = clickSendButton() || pressEnter(editor);
-    if (!sent) {
-      return { ok: false, reason: "Unable to trigger Discord send action" };
+    if (clickSendButton()) {
+      return {
+        ok: true,
+        degradation: degradationForJob(job)
+      };
     }
 
-    return {
-      ok: true,
-      degradation: degradationForJob(job)
-    };
+    pressEnter(editor);
+    if (await waitForComposerClear(editor, job.messageText)) {
+      return {
+        ok: true,
+        degradation: degradationForJob(job)
+      };
+    }
+
+    return { ok: false, reason: "Unable to verify Discord send after Enter fallback" };
   }
 
   async function waitForComposer() {
@@ -207,7 +214,20 @@
     };
     editor.dispatchEvent(new KeyboardEvent("keydown", eventOptions));
     editor.dispatchEvent(new KeyboardEvent("keyup", eventOptions));
-    return true;
+  }
+
+  async function waitForComposerClear(editor, previousText) {
+    const deadline = Date.now() + 2500;
+    const expectedText = normalizeComposerText(previousText);
+    while (Date.now() < deadline) {
+      const currentEditor = findComposer() || editor;
+      const currentText = normalizeComposerText(composerText(currentEditor));
+      if (!currentText || (expectedText && !currentText.includes(expectedText))) {
+        return true;
+      }
+      await delay(100);
+    }
+    return false;
   }
 
   function placeCaretAtEnd(editor) {
@@ -224,6 +244,10 @@
 
   function composerText(editor) {
     return editor.innerText || editor.textContent || "";
+  }
+
+  function normalizeComposerText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
   }
 
   function hasVisibleContent(payload) {
