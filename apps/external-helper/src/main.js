@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,14 +14,16 @@ const statePath = process.env.HELPER_STATE
   ? resolve(process.env.HELPER_STATE)
   : resolve(rootDir, "data", "state.json");
 const port = Number.parseInt(process.env.HELPER_PORT || "17654", 10);
+const authToken = process.env.HELPER_TOKEN?.trim() || randomUUID();
 
 await mkdir(dirname(statePath), { recursive: true });
 const config = await loadConfigFromFile(configPath);
 const store = await createJsonStore(statePath);
-const server = createServer({ config, store });
+const server = createServer({ config, store, authToken });
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Discord extension helper listening on http://127.0.0.1:${port}`);
   console.log(`Config: ${configPath}`);
   console.log(`State: ${statePath}`);
+  console.log(`Token: ${authToken}`);
 });

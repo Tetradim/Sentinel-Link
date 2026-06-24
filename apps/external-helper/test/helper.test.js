@@ -11,6 +11,7 @@ import { createJsonStore } from "../src/store.js";
 const sourceUrl = "https://discord.com/channels/111111111111111111/222222222222222222";
 const firstDestinationUrl = "https://discord.com/channels/333333333333333333/444444444444444444";
 const secondDestinationUrl = "https://discord.com/channels/333333333333333333/555555555555555555";
+const authToken = "test-token";
 
 const sampleConfig = {
   enabled: true,
@@ -48,6 +49,29 @@ const singleDestinationConfig = {
     }
   ]
 };
+
+async function startHelperHttpServer(store, config = sampleConfig) {
+  const server = createServer({ config, store, authToken });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = server.address();
+  return { server, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+async function closeHelperHttpServer(server) {
+  if (!server) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function authHeaders(headers = {}) {
+  return { "x-helper-token": authToken, ...headers };
+}
 
 test("nextRetryDelayMs doubles from base delay by retry attempt", () => {
   assert.equal(nextRetryDelayMs(1, 2000), 2000);
@@ -254,48 +278,272 @@ test("store marks failed job for retry twice and final failure on third failed a
   }
 });
 
+test("createServer requires a non-empty helper auth token", () => {
+  assert.throws(() => createServer({ config: sampleConfig, store: {}, authToken: "" }), /authToken is required/);
+  assert.throws(() => createServer({ config: sampleConfig, store: {} }), /authToken is required/);
+});
+
 test("HTTP API enqueues, claims, records, and reports helper jobs", async () => {
   const dir = await mkdtemp(join(tmpdir(), "helper-http-"));
   let server;
   try {
     const store = await createJsonStore(join(dir, "state.json"));
-    server = createServer({ config: sampleConfig, store });
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const { port } = server.address();
-    const baseUrl = `http://127.0.0.1:${port}`;
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
 
     const eventResponse = await fetch(`${baseUrl}/events`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders({ "content-type": "application/json" }),
       body: JSON.stringify(samplePayload)
     });
     assert.equal(eventResponse.status, 202);
 
-    const nextResponse = await fetch(`${baseUrl}/jobs/next?clientId=copy-repost`);
+    const nextResponse = await fetch(`${baseUrl}/jobs/next?clientId=copy-repost`, {
+      headers: authHeaders()
+    });
     assert.equal(nextResponse.status, 200);
     const job = await nextResponse.json();
     assert.equal(job.destinationUrl, firstDestinationUrl);
 
     const resultResponse = await fetch(`${baseUrl}/jobs/${job.id}/result`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ status: "sent", clientId: "copy-repost", degradation: [] })
     });
     assert.equal(resultResponse.status, 200);
 
-    const statusResponse = await fetch(`${baseUrl}/status`);
+    const statusResponse = await fetch(`${baseUrl}/status`, { headers: authHeaders() });
     assert.equal(statusResponse.status, 200);
     const status = await statusResponse.json();
     assert.equal(status.counts.sent, 1);
   } finally {
-    if (server) {
-      await new Promise((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects requests without helper token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-auth-missing-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/health`);
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "unauthorized",
+        message: "A valid helper token is required."
+      }
+    });
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects requests with wrong helper token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-auth-wrong-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/health`, {
+      headers: { "x-helper-token": "wrong-token" }
+    });
+
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error.code, "unauthorized");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API accepts OPTIONS preflight without helper token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-options-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/events`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://discord.com",
+        "access-control-request-headers": "content-type,x-helper-token"
+      }
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(await response.text(), "");
+    assert.equal(response.headers.get("access-control-allow-origin"), "https://discord.com");
+    assert.equal(response.headers.get("access-control-allow-headers"), "content-type,x-helper-token");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects missing and blank clientId on next job", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-client-id-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const missingResponse = await fetch(`${baseUrl}/jobs/next`, {
+      headers: authHeaders()
+    });
+    assert.equal(missingResponse.status, 400);
+    assert.equal((await missingResponse.json()).error.code, "missing_client_id");
+
+    const blankResponse = await fetch(`${baseUrl}/jobs/next?clientId=%20%20`, {
+      headers: authHeaders()
+    });
+    assert.equal(blankResponse.status, 400);
+    assert.equal((await blankResponse.json()).error.code, "missing_client_id");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects missing and blank clientId on job result", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-result-client-id-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const missingResponse = await fetch(`${baseUrl}/jobs/any-job/result`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ status: "sent", degradation: [] })
+    });
+    assert.equal(missingResponse.status, 400);
+    assert.equal((await missingResponse.json()).error.code, "missing_client_id");
+
+    const blankResponse = await fetch(`${baseUrl}/jobs/any-job/result`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ status: "sent", clientId: "  ", degradation: [] })
+    });
+    assert.equal(blankResponse.status, 400);
+    assert.equal((await blankResponse.json()).error.code, "missing_client_id");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects invalid JSON with stable error code", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-invalid-json-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: "{"
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "invalid_json",
+        message: "Request body must be valid JSON."
+      }
+    });
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API maps wrong result clientId to lease conflict", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-lease-conflict-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store, singleDestinationConfig));
+
+    await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(samplePayload)
+    });
+    const nextResponse = await fetch(`${baseUrl}/jobs/next?clientId=copy-repost`, {
+      headers: authHeaders()
+    });
+    const job = await nextResponse.json();
+
+    const response = await fetch(`${baseUrl}/jobs/${job.id}/result`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ status: "sent", clientId: "other-client", degradation: [] })
+    });
+
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, "lease_conflict");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API maps unknown job result to not found", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-unknown-job-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/jobs/missing-job/result`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ status: "sent", clientId: "copy-repost", degradation: [] })
+    });
+
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, "job_not_found");
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API rejects oversized JSON payloads", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-large-payload-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store));
+
+    const response = await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ text: "x".repeat(1024 * 1024) })
+    });
+
+    assert.equal(response.status, 413);
+    assert.equal((await response.json()).error.code, "payload_too_large");
+  } finally {
+    await closeHelperHttpServer(server);
     await rm(dir, { recursive: true, force: true });
   }
 });
