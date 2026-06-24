@@ -66,6 +66,12 @@ function createElement({ tagName = "div", id = "", className = "", text = "", at
   return node;
 }
 
+function appendChild(parent, child) {
+  parent.children.push(child);
+  child.parentElement = parent;
+  return child;
+}
+
 function findMatchingDescendants(root, selector) {
   const selectors = selector.split(",").map((part) => part.trim()).filter(Boolean);
   const matches = [];
@@ -198,4 +204,100 @@ test("extractAlertFromMessageNode handles absent selectors without throwing", as
   assert.deepEqual(fromSandbox(alert.embeds), []);
   assert.deepEqual(fromSandbox(alert.labels), []);
   assert.deepEqual(fromSandbox(alert.attachmentUrls), []);
+});
+
+test("extractAlertFromMessageNode deduplicates nested embed containers", async () => {
+  const parser = await loadParser();
+  const messageNode = createElement({
+    id: messageNodeId,
+    children: [
+      createElement({
+        className: "embedWrapper",
+        children: [
+          createElement({
+            className: "embedFull",
+            children: [
+              createElement({
+                className: "embedGrid",
+                children: [
+                  createElement({ className: "embedTitle", text: "AAPL" }),
+                  createElement({ className: "embedDescription", text: "Breakout" })
+                ]
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  });
+
+  const alert = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+
+  assert.deepEqual(fromSandbox(alert.embeds), [
+    {
+      title: "AAPL",
+      description: "Breakout",
+      fields: [],
+      footer: ""
+    }
+  ]);
+});
+
+test("extractAlertFromMessageNode preserves text-only embed fields", async () => {
+  const parser = await loadParser();
+  const messageNode = createElement({
+    id: messageNodeId,
+    children: [
+      createElement({
+        className: "embedWrapper",
+        children: [
+          createElement({ className: "embedTitle", text: "AAPL" }),
+          createElement({ className: "embedField", text: "Price\n190" })
+        ]
+      })
+    ]
+  });
+
+  const alert = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+
+  assert.deepEqual(fromSandbox(alert.embeds[0].fields), [{ name: "Price", value: "190" }]);
+});
+
+test("extractAlertFromMessageNode ignores non-Discord attachment paths", async () => {
+  const parser = await loadParser();
+  const messageNode = createElement({
+    id: messageNodeId,
+    children: [
+      createElement({
+        tagName: "a",
+        text: "discord attachment",
+        attrs: { href: "https://cdn.discordapp.com/attachments/file.png" }
+      }),
+      createElement({
+        tagName: "a",
+        text: "external attachment",
+        attrs: { href: "https://example.com/attachments/file.png" }
+      })
+    ]
+  });
+
+  const alert = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+
+  assert.deepEqual(fromSandbox(alert.attachmentUrls), ["https://cdn.discordapp.com/attachments/file.png"]);
+});
+
+test("extractAlertFromMessageNode keeps per-node fallback message id stable when visible content changes", async () => {
+  const parser = await loadParser();
+  const messageNode = createElement({
+    children: [createElement({ className: "markup", text: "Entry alert" })]
+  });
+
+  const first = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+  const second = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+  appendChild(messageNode, createElement({ tagName: "button", text: "Open Chart" }));
+  const third = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+
+  assert.match(first.messageId, /^visible-/);
+  assert.equal(second.messageId, first.messageId);
+  assert.equal(third.messageId, first.messageId);
 });

@@ -1,6 +1,8 @@
 (function () {
   const global = typeof window !== "undefined" ? window : globalThis;
   const emptyChannelIds = { guildId: "", channelId: "" };
+  const nodeFallbackIds = typeof WeakMap === "function" ? new WeakMap() : null;
+  let nextFallbackId = 1;
 
   function parseDiscordChannelIds(rawUrl) {
     let url;
@@ -27,6 +29,8 @@
       source.guildId && source.channelId
         ? `https://discord.com/channels/${source.guildId}/${source.channelId}`
         : pageUrl;
+    const author = firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']);
+    const timestampText = firstVisibleText(messageNode, ["time"]);
     const text = firstVisibleText(messageNode, ['[class*="markup"]']);
     const labels = uniqueStrings(visibleTexts(messageNode, ["button", '[role="button"]', '[class*="button"]']));
     const attachmentUrls = uniqueStrings(queryAll(messageNode, ["a[href]"]).map(getHref).filter(isDiscordAttachmentUrl));
@@ -35,17 +39,9 @@
     return {
       sourceUrl,
       sourceChannelId: source.channelId,
-      messageId: extractMessageId(messageNode, {
-        sourceUrl,
-        author: firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']),
-        timestampText: firstVisibleText(messageNode, ["time"]),
-        text,
-        embeds,
-        labels,
-        attachmentUrls
-      }),
-      author: firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']),
-      timestampText: firstVisibleText(messageNode, ["time"]),
+      messageId: extractMessageId(messageNode),
+      author,
+      timestampText,
       text,
       embeds,
       labels,
@@ -55,9 +51,10 @@
   }
 
   function extractEmbeds(messageNode) {
-    const candidates = uniqueNodes(
+    const selected = uniqueNodes(
       queryAll(messageNode, ['[class*="embedWrapper"]', '[class*="embedFull"]', '[class*="embedGrid"]', '[class*="embed"]'])
-    ).filter(isEmbedContainer);
+    );
+    const candidates = topLevelNodes(selected.filter(isEmbedContainer));
     const roots = candidates.length ? candidates : [messageNode];
     return roots.map(extractEmbed).filter(hasEmbedContent);
   }
@@ -74,9 +71,32 @@
   }
 
   function extractField(fieldNode) {
-    return {
+    const field = {
       name: firstVisibleText(fieldNode, ['[class*="embedFieldName"]']),
       value: firstVisibleText(fieldNode, ['[class*="embedFieldValue"]'])
+    };
+    if (hasFieldContent(field)) {
+      return field;
+    }
+    return extractTextOnlyField(fieldNode);
+  }
+
+  function extractTextOnlyField(fieldNode) {
+    const lines = rawText(fieldNode)
+      .split(/\r?\n/)
+      .map(normalizeWhitespace)
+      .filter(Boolean);
+
+    if (lines.length >= 2) {
+      return {
+        name: lines[0],
+        value: lines.slice(1).join("\n")
+      };
+    }
+
+    return {
+      name: "",
+      value: lines[0] || ""
     };
   }
 
@@ -118,31 +138,139 @@
     return Boolean(field.name || field.value);
   }
 
-  function extractMessageId(messageNode, fallbackParts) {
-    const candidates = [
-      getNodeProperty(messageNode, "id"),
-      getAttribute(messageNode, "id"),
-      getAttribute(messageNode, "data-list-item-id"),
-      getAttribute(messageNode, "aria-labelledby")
-    ];
+  function topLevelNodes(nodes) {
+    const selected = new Set(nodes);
+    return nodes.filter((node) => !hasSelectedAncestor(node, selected));
+  }
 
+  function hasSelectedAncestor(node, selected) {
+    let parent = getParentNode(node);
+    while (parent) {
+      if (selected.has(parent)) {
+        return true;
+      }
+      parent = getParentNode(parent);
+    }
+    return false;
+  }
+
+  function extractMessageId(messageNode) {
+    const candidates = messageIdCandidates(messageNode);
+    const numericId = firstFinalNumericId(candidates);
+    if (numericId) {
+      return numericId;
+    }
+
+    const stableId = firstStableDomMessageId(candidates);
+    if (stableId) {
+      return stableId;
+    }
+
+    const nearestContext = findNearestMessageContext(messageNode);
+    if (nearestContext) {
+      const contextCandidates = messageIdCandidates(nearestContext);
+      return (
+        firstFinalNumericId(contextCandidates) ||
+        firstStableDomMessageId(contextCandidates) ||
+        nodeFallbackMessageId(messageNode)
+      );
+    }
+
+    return nodeFallbackMessageId(messageNode);
+  }
+
+  function firstFinalNumericId(candidates) {
     for (const candidate of candidates) {
       const match = String(candidate || "").match(/(\d+)(?!.*\d)/);
       if (match) {
         return match[1];
       }
     }
-
-    return createFallbackMessageId(fallbackParts);
+    return "";
   }
 
-  function createFallbackMessageId(parts) {
-    const basis = JSON.stringify(parts);
+  function firstStableDomMessageId(candidates) {
+    for (const candidate of candidates) {
+      const normalized = normalizeDomAttributeValue(candidate);
+      if (isStableDomAttributeValue(normalized)) {
+        return `dom-${hashString(normalized)}`;
+      }
+    }
+    return "";
+  }
+
+  function messageIdCandidates(node) {
+    return [
+      getAttribute(node, "data-list-item-id"),
+      getAttribute(node, "aria-labelledby"),
+      getNodeProperty(node, "id"),
+      getAttribute(node, "id")
+    ];
+  }
+
+  function findNearestMessageContext(node) {
+    let parent = getParentNode(node);
+    while (parent) {
+      if (looksLikeMessageContext(parent)) {
+        const candidates = messageIdCandidates(parent);
+        if (firstFinalNumericId(candidates) || firstStableDomMessageId(candidates)) {
+          return parent;
+        }
+      }
+      parent = getParentNode(parent);
+    }
+    return null;
+  }
+
+  function looksLikeMessageContext(node) {
+    const role = getAttribute(node, "role").toLowerCase();
+    const className = getClassName(node).toLowerCase();
+    return Boolean(
+      getAttribute(node, "data-list-item-id") ||
+        role === "listitem" ||
+        className.includes("message") ||
+        className.includes("group")
+    );
+  }
+
+  function nodeFallbackMessageId(node) {
+    if (node && typeof node === "object" && nodeFallbackIds) {
+      const existing = nodeFallbackIds.get(node);
+      if (existing) {
+        return existing;
+      }
+      const id = `visible-${nextFallbackId}`;
+      nextFallbackId += 1;
+      nodeFallbackIds.set(node, id);
+      return id;
+    }
+
+    const id = `visible-${nextFallbackId}`;
+    nextFallbackId += 1;
+    return id;
+  }
+
+  function normalizeDomAttributeValue(value) {
+    return normalizeWhitespace(String(value || ""));
+  }
+
+  function isStableDomAttributeValue(value) {
+    return Boolean(
+      value &&
+        value.length <= 200 &&
+        !/^\d+$/.test(value) &&
+        !/^https?:/i.test(value) &&
+        /[A-Za-z_-]/.test(value) &&
+        /^[A-Za-z0-9:_\-. ]+$/.test(value)
+    );
+  }
+
+  function hashString(value) {
     let hash = 0;
-    for (const character of basis) {
+    for (const character of value) {
       hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
     }
-    return `visible-${hash.toString(16)}`;
+    return hash.toString(16);
   }
 
   function firstVisibleText(root, selectors) {
@@ -209,13 +337,21 @@
   }
 
   function normalizedText(node) {
-    const rawText =
-      typeof node?.innerText === "string"
-        ? node.innerText
-        : typeof node?.textContent === "string"
-          ? node.textContent
-          : "";
-    return rawText.replace(/\s+/g, " ").trim();
+    return normalizeWhitespace(rawText(node));
+  }
+
+  function rawText(node) {
+    if (typeof node?.innerText === "string") {
+      return node.innerText;
+    }
+    if (typeof node?.textContent === "string") {
+      return node.textContent;
+    }
+    return "";
+  }
+
+  function normalizeWhitespace(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
   }
 
   function isVisible(node) {
@@ -268,7 +404,19 @@
       return false;
     }
     const host = url.hostname.toLowerCase();
-    return host === "cdn.discordapp.com" || host === "media.discordapp.net" || url.pathname.includes("/attachments/");
+    if (host === "cdn.discordapp.com" || host === "media.discordapp.net") {
+      return true;
+    }
+    return isDiscordOwnedHost(host) && url.pathname.includes("/attachments/");
+  }
+
+  function isDiscordOwnedHost(host) {
+    return (
+      host === "discord.com" ||
+      host.endsWith(".discord.com") ||
+      host === "discordapp.com" ||
+      host.endsWith(".discordapp.com")
+    );
   }
 
   function getClassName(node) {
@@ -293,6 +441,10 @@
     } catch {
       return "";
     }
+  }
+
+  function getParentNode(node) {
+    return getNodeProperty(node, "parentElement") || getNodeProperty(node, "parentNode") || null;
   }
 
   global.DiscordCopyRepostParser = {
