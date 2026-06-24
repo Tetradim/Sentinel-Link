@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node --test packages/shared/test/*.test.js apps/external-helper/test/*.test.js extensions/copy-repost/test/*.test.js",
+    "test": "node --test packages/shared/test/*.test.js apps/external-helper/test/*.test.js extensions/copy-repost/test/*.test.js extensions/trading-bridge/test/*.test.js",
     "test:shared": "node --test packages/shared/test/*.test.js",
     "test:helper": "node --test apps/external-helper/test/*.test.js",
     "test:copy-repost": "node --test extensions/copy-repost/test/*.test.js",
