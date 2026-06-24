@@ -14,6 +14,8 @@ Every non-OPTIONS helper call requires the `x-helper-token` header. The token co
 
 ## Example Call
 
+From a content script, use `window.TradingBridgeHelperClient`:
+
 ```javascript
 await window.TradingBridgeHelperClient.submitTradingBridgeAlert(
   {
@@ -31,11 +33,19 @@ await window.TradingBridgeHelperClient.submitTradingBridgeAlert(
 );
 ```
 
+From an MV3 background service worker, use `globalThis.TradingBridgeHelperClient` instead:
+
+```javascript
+await globalThis.TradingBridgeHelperClient.submitTradingBridgeAlert(payload, {
+  helperToken: "paste-helper-token-here"
+});
+```
+
 ## Source Import Guidance
 
-Place the current installed trading bridge extension source in this directory, preserving its manifest and runtime files. Wire the existing parsed alert point to `window.TradingBridgeHelperClient.submitTradingBridgeAlert(...)` after `helper-client.js` is loaded by the extension.
+Place the current installed trading bridge extension source in this directory, preserving its manifest and runtime files. Wire the existing parsed alert point to `TradingBridgeHelperClient.submitTradingBridgeAlert(...)` after `helper-client.js` is loaded by the extension, using `window.TradingBridgeHelperClient` in content scripts and `globalThis.TradingBridgeHelperClient` in MV3 background service workers.
 
-The helper client posts to `http://127.0.0.1:17654/events` by default. Pass `helperBaseUrl` only when the helper is intentionally running somewhere else. Pass `helperToken` explicitly, or store it as `helperToken` in `chrome.storage.local` for the helper client to read.
+The helper client posts to `http://127.0.0.1:17654/events` by default. Pass `helperBaseUrl` only when the helper is intentionally running somewhere else. Pass `helperToken` explicitly, or store it as `helperToken` in `chrome.storage.local` for the helper client to read. If the extension relies on `chrome.storage.local`, its manifest must include the `"storage"` permission.
 
 ## Boundaries
 
