@@ -8,14 +8,14 @@ Build a coordinated toolkit for Discord alert testing that can copy visible aler
 
 The repository will use a single monorepo layout on `main`:
 
-- `extensions/existing-bridge/` for the already-made Chrome extension used by the other bots.
+- `extensions/trading-bridge/` for the already-made Chrome extension currently installed on all trading bots.
 - `extensions/copy-repost/` for the new Chrome extension that copies visible alerts and recreates them in destination channels.
 - `apps/external-helper/` for the local helper app that watches both extensions, owns durable queue state, and records retry history.
 - `packages/shared/` for shared message, mapping, and event schemas used by the extensions and helper.
 
 Implementation work will use short-lived feature branches:
 
-- `feature/existing-bridge-extension`
+- `feature/trading-bridge-extension`
 - `feature/copy-repost-extension`
 - `feature/external-helper-app`
 
@@ -25,8 +25,8 @@ Each branch should land a complete, independently reviewable vertical slice, the
 
 The system has three cooperating parts:
 
-1. Existing bridge extension
-   - Imported or adapted into `extensions/existing-bridge/`.
+1. Trading bridge extension
+   - Imported or adapted into `extensions/trading-bridge/`.
    - Emits normalized channel/message events to the helper when possible.
    - Keeps its original bot-helper behavior intact unless a compatibility change is needed.
 
