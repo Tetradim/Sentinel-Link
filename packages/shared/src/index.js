@@ -1,7 +1,12 @@
 export function normalizeChannelUrl(rawUrl) {
-  const url = new URL(rawUrl);
-  const match = url.pathname.match(/^\/channels\/([^/]+)\/([^/]+)/);
-  if (!match) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error(`Discord channel URL expected: ${rawUrl}`);
+  }
+  const match = url.pathname.match(/^\/channels\/(\d+)\/(\d+)\/?$/);
+  if (url.protocol !== "https:" || url.hostname !== "discord.com" || !match) {
     throw new Error(`Discord channel URL expected: ${rawUrl}`);
   }
   return {
@@ -15,22 +20,37 @@ export function validateConfig(input) {
   if (!input || typeof input !== "object") {
     throw new Error("Config must be an object");
   }
-  const retry = input.retry ?? {};
-  const maxAttempts = Number.isInteger(retry.maxAttempts) ? retry.maxAttempts : 3;
-  const baseDelayMs = Number.isInteger(retry.baseDelayMs) ? retry.baseDelayMs : 2000;
-  if (maxAttempts < 1 || maxAttempts > 10) {
-    throw new Error("retry.maxAttempts must be between 1 and 10");
+  const retry = Object.hasOwn(input, "retry") ? input.retry : {};
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) {
+    throw new Error("retry must be an object");
   }
-  if (baseDelayMs < 250 || baseDelayMs > 60000) {
-    throw new Error("retry.baseDelayMs must be between 250 and 60000");
+  const maxAttempts = integerInRange(retry, "maxAttempts", 3, 1, 10, "retry.maxAttempts");
+  const baseDelayMs = integerInRange(retry, "baseDelayMs", 2000, 250, 60000, "retry.baseDelayMs");
+  if (Object.hasOwn(input, "mappings") && !Array.isArray(input.mappings)) {
+    throw new Error("mappings must be an array");
   }
-  const mappings = Array.isArray(input.mappings) ? input.mappings : [];
+  const mappings = Object.hasOwn(input, "mappings") ? input.mappings : [];
+  const sendPacingMs = integerInRange(input, "sendPacingMs", 1500, 250, 60000, "sendPacingMs");
   return {
     enabled: input.enabled !== false,
     retry: { maxAttempts, baseDelayMs },
-    sendPacingMs: Number.isInteger(input.sendPacingMs) ? input.sendPacingMs : 1500,
+    sendPacingMs,
     mappings: mappings.map((mapping, index) => validateMapping(mapping, index))
   };
+}
+
+function integerInRange(input, key, defaultValue, min, max, label) {
+  if (!Object.hasOwn(input, key)) {
+    return defaultValue;
+  }
+  const value = input[key];
+  if (!Number.isInteger(value)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  if (value < min || value > max) {
+    throw new Error(`${label} must be between ${min} and ${max}`);
+  }
+  return value;
 }
 
 function validateMapping(mapping, index) {
@@ -67,21 +87,43 @@ export function validateAlertPayload(input) {
     throw new Error("Alert payload must be an object");
   }
   const source = normalizeChannelUrl(input.sourceUrl);
-  const text = typeof input.text === "string" ? input.text : "";
-  const embeds = Array.isArray(input.embeds) ? input.embeds.map(validateEmbed) : [];
-  const labels = Array.isArray(input.labels) ? input.labels.filter((label) => typeof label === "string") : [];
-  const attachmentUrls = Array.isArray(input.attachmentUrls)
-    ? input.attachmentUrls.filter((url) => typeof url === "string")
+  const text = typeof input.text === "string" ? input.text.trim() : "";
+  const embeds = Array.isArray(input.embeds) ? input.embeds.map(validateEmbed).filter(hasEmbedContent) : [];
+  const labels = Array.isArray(input.labels)
+    ? input.labels
+        .filter((label) => typeof label === "string")
+        .map((label) => label.trim())
+        .filter(Boolean)
     : [];
-  if (!text.trim() && embeds.length === 0 && labels.length === 0 && attachmentUrls.length === 0) {
+  const attachmentUrls = Array.isArray(input.attachmentUrls)
+    ? input.attachmentUrls
+        .filter((url) => typeof url === "string")
+        .map((url) => url.trim())
+        .filter(Boolean)
+    : [];
+  if (!text && embeds.length === 0 && labels.length === 0 && attachmentUrls.length === 0) {
     throw new Error("Alert payload must include visible content");
   }
+  const author = typeof input.author === "string" ? input.author.trim() : "";
+  const timestampText = typeof input.timestampText === "string" ? input.timestampText.trim() : "";
+  const messageId =
+    typeof input.messageId === "string" && input.messageId.trim()
+      ? input.messageId.trim()
+      : createFallbackMessageId({
+          sourceUrl: source.url,
+          author,
+          timestampText,
+          text,
+          embeds,
+          labels,
+          attachmentUrls
+        });
   return {
     sourceUrl: source.url,
-    sourceChannelId: typeof input.sourceChannelId === "string" ? input.sourceChannelId : source.channelId,
-    messageId: typeof input.messageId === "string" && input.messageId ? input.messageId : createFallbackMessageId(input),
-    author: typeof input.author === "string" ? input.author : "",
-    timestampText: typeof input.timestampText === "string" ? input.timestampText : "",
+    sourceChannelId: source.channelId,
+    messageId,
+    author,
+    timestampText,
     text,
     embeds,
     labels,
@@ -94,18 +136,31 @@ function validateEmbed(embed) {
   const fields = Array.isArray(embed?.fields)
     ? embed.fields
         .filter((field) => field && typeof field.name === "string" && typeof field.value === "string")
-        .map((field) => ({ name: field.name, value: field.value }))
+        .map((field) => ({ name: field.name.trim(), value: field.value.trim() }))
+        .filter((field) => field.name && field.value)
     : [];
   return {
-    title: typeof embed?.title === "string" ? embed.title : "",
-    description: typeof embed?.description === "string" ? embed.description : "",
+    title: typeof embed?.title === "string" ? embed.title.trim() : "",
+    description: typeof embed?.description === "string" ? embed.description.trim() : "",
     fields,
-    footer: typeof embed?.footer === "string" ? embed.footer : ""
+    footer: typeof embed?.footer === "string" ? embed.footer.trim() : ""
   };
 }
 
+function hasEmbedContent(embed) {
+  return Boolean(embed.title || embed.description || embed.fields.length || embed.footer);
+}
+
 function createFallbackMessageId(input) {
-  const basis = `${input.sourceUrl ?? ""}|${input.author ?? ""}|${input.timestampText ?? ""}|${input.text ?? ""}`;
+  const basis = JSON.stringify({
+    sourceUrl: input.sourceUrl,
+    author: input.author,
+    timestampText: input.timestampText,
+    text: input.text,
+    embeds: input.embeds,
+    labels: input.labels,
+    attachmentUrls: input.attachmentUrls
+  });
   let hash = 0;
   for (const character of basis) {
     hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
