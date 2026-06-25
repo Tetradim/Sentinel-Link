@@ -1,5 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { evaluatePayloadFreshness } from "@extension-external/shared";
 
 const maxJsonBodyBytes = 1024 * 1024;
 const allowedDiscordOrigins = new Set([
@@ -40,6 +41,15 @@ async function route({ request, response, config, store, authToken }) {
   if (request.method === "POST" && url.pathname === "/events") {
     const body = await readJson(request);
     const eventRequest = normalizeEventRequest(body, config);
+    const freshness = evaluatePayloadFreshness(eventRequest.payload, eventRequest.config.freshness);
+    if (!freshness.fresh) {
+      return sendJson(response, request, 202, {
+        skippedStale: true,
+        reason: freshness.reason,
+        freshness,
+        createdJobs: []
+      });
+    }
     const result = await store.enqueueAlert(eventRequest.config, eventRequest.payload);
     return sendJson(response, request, 202, result);
   }
@@ -49,7 +59,7 @@ async function route({ request, response, config, store, authToken }) {
     if (!clientId) {
       throw new HttpError(400, "missing_client_id", "clientId is required.");
     }
-    const job = await store.claimNextJob(clientId);
+    const job = await claimNextFreshJob(store, config, clientId);
     return sendJson(response, request, 200, job ?? { job: null });
   }
 
@@ -77,6 +87,30 @@ async function route({ request, response, config, store, authToken }) {
   }
 
   throw new HttpError(404, "not_found", "Route not found.");
+}
+
+async function claimNextFreshJob(store, config, clientId) {
+  for (let skippedCount = 0; skippedCount < 1000; skippedCount += 1) {
+    const job = await store.claimNextJob(clientId);
+    if (!job) {
+      return null;
+    }
+
+    const freshness = evaluatePayloadFreshness(job.payload, config.freshness);
+    if (freshness.fresh) {
+      return job;
+    }
+
+    await store.recordJobResult({
+      jobId: job.id,
+      status: "failed",
+      reason: `stale source message: ${freshness.reason}`,
+      retry: { maxAttempts: 1, baseDelayMs: config.retry.baseDelayMs },
+      clientId
+    });
+  }
+
+  throw new HttpError(409, "too_many_stale_jobs", "Too many stale jobs were skipped in one claim request.");
 }
 
 class HttpError extends Error {
@@ -111,6 +145,7 @@ function sanitizeConfig(config) {
   return {
     enabled: config.enabled,
     retry: config.retry,
+    freshness: config.freshness,
     sendPacingMs: config.sendPacingMs,
     mappings: config.mappings
   };

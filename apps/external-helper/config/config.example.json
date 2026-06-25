@@ -4,6 +4,11 @@
     "maxAttempts": 3,
     "baseDelayMs": 2000
   },
+  "freshness": {
+    "enabled": true,
+    "maxAgeMinutes": 10,
+    "requireTimestamp": true
+  },
   "sendPacingMs": 1500,
   "mappings": [
     {

@@ -58,6 +58,15 @@ const singleDestinationConfig = {
   ]
 };
 
+const freshnessConfig = {
+  ...singleDestinationConfig,
+  freshness: {
+    enabled: true,
+    maxAgeMinutes: 10,
+    requireTimestamp: true
+  }
+};
+
 async function startHelperHttpServer(store, config = sampleConfig) {
   let lastBlockedPort = "";
   for (let attempt = 0; attempt < maxFetchPortAttempts; attempt += 1) {
@@ -405,6 +414,58 @@ test("HTTP API accepts extension-supplied event mappings", async () => {
     assert.equal(eventBody.createdJobs.length, 1);
     assert.equal(eventBody.createdJobs[0].destinationUrl, firstDestinationUrl);
     assert.equal(eventBody.createdJobs[0].messageText.includes("[copied-alert]"), true);
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API skips stale events before queueing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-stale-event-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store, freshnessConfig));
+
+    const eventResponse = await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(samplePayload)
+    });
+
+    assert.equal(eventResponse.status, 202);
+    const eventBody = await eventResponse.json();
+    assert.equal(eventBody.skippedStale, true);
+    assert.equal(eventBody.reason, "missing Discord timestamp");
+
+    const snapshot = await store.snapshot();
+    assert.equal(snapshot.jobs.length, 0);
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API fails stale queued jobs instead of handing them to clients", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-stale-queued-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    await store.enqueueAlert(singleDestinationConfig, samplePayload);
+    let baseUrl;
+    ({ server, baseUrl } = await startHelperHttpServer(store, freshnessConfig));
+
+    const nextResponse = await fetch(`${baseUrl}/jobs/next?clientId=copy-repost`, {
+      headers: authHeaders()
+    });
+
+    assert.equal(nextResponse.status, 200);
+    assert.deepEqual(await nextResponse.json(), { job: null });
+
+    const snapshot = await store.snapshot();
+    assert.equal(snapshot.jobs[0].status, "failed");
+    assert.equal(snapshot.jobs[0].reason, "stale source message: missing Discord timestamp");
   } finally {
     await closeHelperHttpServer(server);
     await rm(dir, { recursive: true, force: true });

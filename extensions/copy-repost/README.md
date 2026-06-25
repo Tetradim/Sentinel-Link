@@ -40,3 +40,4 @@ The helper listens on `http://127.0.0.1:17654`. Every non-OPTIONS helper request
 - Repost text includes source, author/time, copied body text, embeds, and visible attachment URLs.
 - Discord UI labels, profile badges, server tags, and button text are not included in reposts.
 - Source messages older than the popup freshness window are ignored before helper queueing.
+- If helper config also enables `freshness`, stale queued jobs are failed server-side instead of being handed back to the extension.

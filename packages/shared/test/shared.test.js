@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createDedupeKey,
+  evaluatePayloadFreshness,
   formatRepostMessage,
   normalizeChannelUrl,
   validateAlertPayload,
@@ -34,6 +35,7 @@ test("validateConfig accepts enabled source to multiple destinations mapping", (
   const config = validateConfig({
     enabled: true,
     retry: { maxAttempts: 3, baseDelayMs: 2000 },
+    freshness: { enabled: true, maxAgeMinutes: 5, requireTimestamp: true },
     mappings: [
       {
         id: "alerts-to-test",
@@ -49,6 +51,7 @@ test("validateConfig accepts enabled source to multiple destinations mapping", (
   });
 
   assert.equal(config.enabled, true);
+  assert.deepEqual(config.freshness, { enabled: true, maxAgeMinutes: 5, requireTimestamp: true });
   assert.equal(config.mappings[0].destinationUrls.length, 2);
 });
 
@@ -64,6 +67,10 @@ test("validateConfig rejects malformed provided fields", () => {
   assert.throws(
     () => validateConfig({ sendPacingMs: 100, mappings: [] }),
     /sendPacingMs must be between 250 and 60000/
+  );
+  assert.throws(
+    () => validateConfig({ freshness: { maxAgeMinutes: 0 }, mappings: [] }),
+    /freshness.maxAgeMinutes must be between 1 and 1440/
   );
 });
 
@@ -205,4 +212,25 @@ test("formatRepostMessage includes rich visible fields and degraded URL content"
   assert.doesNotMatch(message, /Labels:/);
   assert.doesNotMatch(message, /Open Chart/);
   assert.match(message, /https:\/\/cdn.discordapp.com\/file.png/);
+});
+
+test("evaluatePayloadFreshness accepts fresh timestamped payloads", () => {
+  const result = evaluatePayloadFreshness(
+    { timestampIso: "2026-06-25T19:39:00.000Z" },
+    { enabled: true, maxAgeMinutes: 10, requireTimestamp: true },
+    new Date("2026-06-25T19:40:00.000Z")
+  );
+
+  assert.equal(result.fresh, true);
+});
+
+test("evaluatePayloadFreshness rejects missing timestamps when required", () => {
+  const result = evaluatePayloadFreshness(
+    { capturedAt: "2026-06-25T19:40:00.000Z" },
+    { enabled: true, maxAgeMinutes: 10, requireTimestamp: true },
+    new Date("2026-06-25T19:40:00.000Z")
+  );
+
+  assert.equal(result.fresh, false);
+  assert.equal(result.reason, "missing Discord timestamp");
 });

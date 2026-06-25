@@ -31,11 +31,24 @@ export function validateConfig(input) {
   }
   const mappings = Object.hasOwn(input, "mappings") ? input.mappings : [];
   const sendPacingMs = integerInRange(input, "sendPacingMs", 1500, 250, 60000, "sendPacingMs");
+  const freshness = validateFreshness(Object.hasOwn(input, "freshness") ? input.freshness : {});
   return {
     enabled: input.enabled !== false,
     retry: { maxAttempts, baseDelayMs },
+    freshness,
     sendPacingMs,
     mappings: mappings.map((mapping, index) => validateMapping(mapping, index))
+  };
+}
+
+function validateFreshness(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("freshness must be an object");
+  }
+  return {
+    enabled: input.enabled === true,
+    maxAgeMinutes: integerInRange(input, "maxAgeMinutes", 10, 1, 1440, "freshness.maxAgeMinutes"),
+    requireTimestamp: input.requireTimestamp !== false
   };
 }
 
@@ -212,4 +225,36 @@ export function formatRepostMessage(payload, options = {}) {
     lines.push(...valid.attachmentUrls);
   }
   return lines.join("\n").trim();
+}
+
+export function evaluatePayloadFreshness(payload, freshness = {}, now = new Date()) {
+  const enabled = freshness?.enabled === true;
+  const maxAgeMinutes = Number.isInteger(freshness?.maxAgeMinutes) ? freshness.maxAgeMinutes : 10;
+  const requireTimestamp = freshness?.requireTimestamp !== false;
+  const maxAgeMs = maxAgeMinutes * 60 * 1000;
+  if (!enabled) {
+    return { fresh: true, reason: "freshness disabled", ageMs: null, maxAgeMs };
+  }
+
+  const timestampIso = typeof payload?.timestampIso === "string" ? payload.timestampIso.trim() : "";
+  if (!timestampIso) {
+    return requireTimestamp
+      ? { fresh: false, reason: "missing Discord timestamp", ageMs: null, maxAgeMs }
+      : { fresh: true, reason: "timestamp not required", ageMs: null, maxAgeMs };
+  }
+
+  const messageMs = Date.parse(timestampIso);
+  if (!Number.isFinite(messageMs)) {
+    return requireTimestamp
+      ? { fresh: false, reason: "invalid Discord timestamp", ageMs: null, maxAgeMs }
+      : { fresh: true, reason: "timestamp not required", ageMs: null, maxAgeMs };
+  }
+
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const ageMs = nowMs - messageMs;
+  if (ageMs > maxAgeMs) {
+    return { fresh: false, reason: "message older than freshness window", ageMs, maxAgeMs };
+  }
+
+  return { fresh: true, reason: "fresh", ageMs, maxAgeMs };
 }

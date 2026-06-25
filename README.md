@@ -188,6 +188,11 @@ Example:
     "maxAttempts": 3,
     "baseDelayMs": 2000
   },
+  "freshness": {
+    "enabled": true,
+    "maxAgeMinutes": 10,
+    "requireTimestamp": true
+  },
   "sendPacingMs": 1500,
   "mappings": [
     {
@@ -209,6 +214,9 @@ Config fields:
 - `enabled`: global helper enable switch. When false, mappings do not create jobs.
 - `retry.maxAttempts`: total attempts per destination job. Default is 3.
 - `retry.baseDelayMs`: exponential retry base delay. With default config, failures retry after 2 seconds, then 4 seconds, then fail after the third failed attempt.
+- `freshness.enabled`: helper-side stale-source guard. When true, `/events` skips stale submissions and `/jobs/next` fails stale queued jobs instead of handing them to clients.
+- `freshness.maxAgeMinutes`: maximum source-message age accepted by the helper. Default is 10 when freshness is enabled.
+- `freshness.requireTimestamp`: when true, source messages without `timestampIso` are treated as stale. This protects against older extension builds that scan channel history without Discord timestamps.
 - `sendPacingMs`: reserved pacing value for clients/operators. Current queue claiming is lease-based.
 - `mappings[].id`: stable mapping identifier used in jobs and logs.
 - `mappings[].enabled`: per-mapping enable switch.
@@ -257,6 +265,8 @@ Required practical input:
 `labels` from Discord UI buttons, profile badges, and server tags are intentionally ignored by the copy/repost formatter. Reposts include only source, author/time, copied body text, embeds, and visible attachment URLs.
 
 The copy/repost extension also uses `timestampIso` to prevent old channel history from being reposted when a source channel is opened or refreshed. By default, only Discord messages from the last 10 minutes are submitted. Messages without a Discord timestamp are skipped by the freshness gate.
+
+When helper `freshness.enabled` is true, the same stale-source rule is enforced again in the local helper. This second guard prevents stale jobs already stored in `state.json`, or submissions from an older extension build, from being reposted.
 
 The shared package derives `sourceChannelId` from `sourceUrl`. The helper dedupes by source channel and message ID. When a real Discord message ID is unavailable, the parser uses stable DOM-derived fallbacks for the current page session.
 
