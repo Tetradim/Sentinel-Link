@@ -93,7 +93,7 @@ It has three runtime parts:
 
 - `src/content.js`: runs inside Discord channel tabs.
 - `src/background.js`: owns helper communication, config filtering, polling, tab coordination, and result reporting.
-- `src/popup.html` / `src/popup.js`: stores enable state and helper token.
+- `src/popup.html` / `src/popup.js`: stores enable state, helper token, Listen channel URLs, and Post channel URLs.
 
 The content script monitors visible Discord message DOM nodes matching:
 
@@ -117,6 +117,7 @@ The content script does not talk to the helper directly. It sends payloads to th
 The background worker:
 
 - reads `/config` from the helper
+- prefers popup-managed Listen/Post routes when any popup channel URLs are locked
 - filters source observations before calling `/events`
 - uses `chrome.alarms` for MV3-compatible polling
 - claims helper jobs through `/jobs/next?clientId=copy-repost-extension`
@@ -156,6 +157,16 @@ await globalThis.TradingBridgeHelperClient.submitTradingBridgeAlert(payload, {
 If the extension relies on `chrome.storage.local` token lookup, its manifest needs the `"storage"` permission.
 
 ## Helper Configuration
+
+The easiest runtime setup is now through the Copy/Repost extension popup:
+
+- Add source channels under **Listen**.
+- Add destination channels under **Post**.
+- The extension stores those URLs in `chrome.storage.local`.
+- When popup routes exist, the extension sends matching alert events to the helper with runtime mappings.
+- The helper still owns dedupe, queueing, retries, and job state.
+
+The helper file config remains useful for scripted setups and fallback operation when no popup routes are saved.
 
 Create a local config file for real channels:
 
@@ -257,6 +268,29 @@ Routes:
 - `POST /jobs/:id/result`: records `sent` or `failed` for the claiming client.
 - `GET /status`: returns queue counts and recent events.
 
+`POST /events` accepts the original raw alert payload shape, which uses the helper file config. It also accepts the popup-managed route shape:
+
+```json
+{
+  "alert": {
+    "sourceUrl": "https://discord.com/channels/111111111111111111/222222222222222222",
+    "messageId": "999999999999999999",
+    "text": "Entry alert"
+  },
+  "mappings": [
+    {
+      "id": "popup-route-222222222222222222",
+      "enabled": true,
+      "sourceUrl": "https://discord.com/channels/111111111111111111/222222222222222222",
+      "destinationUrls": [
+        "https://discord.com/channels/333333333333333333/444444444444444444"
+      ],
+      "prefix": "[copied-alert]"
+    }
+  ]
+}
+```
+
 Result bodies must include the claiming `clientId`:
 
 ```json
@@ -328,8 +362,9 @@ Copy that token into the copy/repost extension popup or pass it to the trading b
 5. Select `extensions/copy-repost`.
 6. Open the extension popup.
 7. Paste the helper token.
-8. Keep the extension enabled.
-9. Open each configured Discord source channel in Chrome.
+8. Add Listen and Post channel URLs.
+9. Keep the extension enabled.
+10. Open each configured Discord source channel in Chrome.
 
 The extension popup shows:
 
@@ -337,6 +372,30 @@ The extension popup shows:
 - helper token input
 - helper connection status
 - last background status
+- Listen URL input with Lock, Revert, and Revert All
+- Post URL input with Lock and Revert
+
+### Popup Channel Inputs
+
+The **Listen** input stores Discord source channel URLs.
+
+- Paste a Discord channel URL.
+- Click **Lock**.
+- The URL is normalized, saved, and cleared from the input.
+- A duplicate Listen URL shows an error and is not saved.
+- **Revert** removes the most recently locked Listen URL and places it back in the input.
+- Repeated **Revert** clicks continue walking backward through the Listen stack.
+- **Revert All** clears all saved Listen URLs.
+
+The **Post** input stores destination channel URLs.
+
+- Paste a Discord channel URL.
+- Click **Lock**.
+- The URL is normalized, saved, and left visible in the input with a grey locked style.
+- Typing or pasting a new URL removes the locked styling so another destination can be added.
+- **Revert** removes only the most recently locked Post URL and shows the previous saved Post URL when one exists.
+
+Popup routes are active as soon as at least one Listen or Post URL is saved. If Listen URLs exist but no Post URL exists, matching alerts are not submitted and the extension status reports that no post channels are configured.
 
 ## End-To-End Flow
 

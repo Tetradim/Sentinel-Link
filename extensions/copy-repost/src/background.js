@@ -1,8 +1,13 @@
+importScripts("channel-routes.js");
+
 const helperBaseUrl = "http://127.0.0.1:17654";
 const clientId = "copy-repost-extension";
 const pollAlarmName = "copy-repost-poll";
 const pollAlarmPeriodMinutes = 1;
 const configCacheTtlMs = 60_000;
+const listenStorageKey = "listenChannelUrls";
+const postStorageKey = "postChannelUrls";
+const routeHelpers = globalThis.CopyRepostChannelRoutes;
 
 let pollInFlight = false;
 let sourceConfigCache = null;
@@ -48,7 +53,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if (changes.helperToken || changes.enabled) {
+  if (changes.helperToken || changes.enabled || changes[listenStorageKey] || changes[postStorageKey]) {
     sourceConfigCache = null;
     void ensurePollAlarm();
     void pollHelper();
@@ -56,7 +61,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 async function initializeStorageDefaults() {
-  const state = await chrome.storage.local.get(["enabled", "helperToken"]);
+  const state = await chrome.storage.local.get(["enabled", "helperToken", listenStorageKey, postStorageKey]);
   const defaults = {
     lastStatus: "installed",
     lastStatusAt: new Date().toISOString()
@@ -68,6 +73,14 @@ async function initializeStorageDefaults() {
 
   if (typeof state.helperToken !== "string") {
     defaults.helperToken = "";
+  }
+
+  if (!Array.isArray(state[listenStorageKey])) {
+    defaults[listenStorageKey] = [];
+  }
+
+  if (!Array.isArray(state[postStorageKey])) {
+    defaults[postStorageKey] = [];
   }
 
   await chrome.storage.local.set(defaults);
@@ -98,7 +111,12 @@ async function submitPayload(payload) {
 
   const result = await helperFetch("/events", {
     method: "POST",
-    body: payload
+    body: sourceConfig.runtimeMappings
+      ? {
+          alert: payload,
+          mappings: sourceConfig.runtimeMappings
+        }
+      : payload
   });
   const createdCount = Array.isArray(result?.createdJobs) ? result.createdJobs.length : 0;
   await setStatus(result?.skippedDuplicate ? "event skipped duplicate" : `event submitted (${createdCount} jobs)`);
@@ -251,10 +269,40 @@ async function reportJobResult(jobId, body) {
 }
 
 async function getEnabledSourceConfig() {
-  const { helperToken = "" } = await chrome.storage.local.get("helperToken");
+  const {
+    helperToken = "",
+    listenChannelUrls = [],
+    postChannelUrls = []
+  } = await chrome.storage.local.get(["helperToken", listenStorageKey, postStorageKey]);
   const token = normalizeToken(helperToken);
+  const listenUrls = routeHelpers.normalizeUrlList(listenChannelUrls);
+  const postUrls = routeHelpers.normalizeUrlList(postChannelUrls);
+  const usesPopupRoutes = routeHelpers.hasStoredRoutes(listenUrls, postUrls);
+  const cacheKey = usesPopupRoutes
+    ? `${token}|popup|${listenUrls.join(",")}|${postUrls.join(",")}`
+    : `${token}|helper-config`;
   const now = Date.now();
-  if (sourceConfigCache && sourceConfigCache.token === token && sourceConfigCache.expiresAt > now) {
+  if (sourceConfigCache && sourceConfigCache.cacheKey === cacheKey && sourceConfigCache.expiresAt > now) {
+    return sourceConfigCache;
+  }
+
+  if (usesPopupRoutes) {
+    if (listenUrls.length > 0 && postUrls.length === 0) {
+      throw new Error("no post channels configured");
+    }
+
+    const runtimeConfig = routeHelpers.buildRuntimeConfig({
+      listenChannelUrls: listenUrls,
+      postChannelUrls: postUrls
+    });
+    const enabledSources = extractEnabledSources(runtimeConfig);
+    sourceConfigCache = {
+      token,
+      cacheKey,
+      expiresAt: now + configCacheTtlMs,
+      runtimeMappings: runtimeConfig.mappings,
+      ...enabledSources
+    };
     return sourceConfigCache;
   }
 
@@ -262,6 +310,7 @@ async function getEnabledSourceConfig() {
   const enabledSources = extractEnabledSources(config);
   sourceConfigCache = {
     token,
+    cacheKey,
     expiresAt: now + configCacheTtlMs,
     ...enabledSources
   };

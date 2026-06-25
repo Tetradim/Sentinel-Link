@@ -38,8 +38,9 @@ async function route({ request, response, config, store, authToken }) {
   }
 
   if (request.method === "POST" && url.pathname === "/events") {
-    const payload = await readJson(request);
-    const result = await store.enqueueAlert(config, payload);
+    const body = await readJson(request);
+    const eventRequest = normalizeEventRequest(body, config);
+    const result = await store.enqueueAlert(eventRequest.config, eventRequest.payload);
     return sendJson(response, request, 202, result);
   }
 
@@ -112,6 +113,20 @@ function sanitizeConfig(config) {
     retry: config.retry,
     sendPacingMs: config.sendPacingMs,
     mappings: config.mappings
+  };
+}
+
+function normalizeEventRequest(body, baseConfig) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(body, "alert")) {
+    return { config: baseConfig, payload: body };
+  }
+
+  return {
+    config: {
+      ...baseConfig,
+      mappings: Object.hasOwn(body, "mappings") ? body.mappings : baseConfig.mappings
+    },
+    payload: body.alert
   };
 }
 

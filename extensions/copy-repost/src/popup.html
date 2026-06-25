@@ -24,6 +24,35 @@
         <span>Show token</span>
       </label>
 
+      <section class="channel-section" aria-labelledby="listen-heading">
+        <h2 id="listen-heading">Listen</h2>
+        <label class="field">
+          <span>Discord channel URL</span>
+          <input id="listen-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://discord.com/channels/...">
+        </label>
+        <div class="actions three">
+          <button id="listen-lock" type="button">Lock</button>
+          <button id="listen-revert" type="button">Revert</button>
+          <button id="listen-revert-all" type="button">Revert All</button>
+        </div>
+        <p id="listen-message" class="message" role="status"></p>
+        <p id="listen-summary" class="summary"></p>
+      </section>
+
+      <section class="channel-section" aria-labelledby="post-heading">
+        <h2 id="post-heading">Post</h2>
+        <label class="field">
+          <span>Discord channel URL</span>
+          <input id="post-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://discord.com/channels/...">
+        </label>
+        <div class="actions">
+          <button id="post-lock" type="button">Lock</button>
+          <button id="post-revert" type="button">Revert</button>
+        </div>
+        <p id="post-message" class="message" role="status"></p>
+        <p id="post-summary" class="summary"></p>
+      </section>
+
       <dl>
         <dt>Helper</dt>
         <dd id="helper-status">loading</dd>
@@ -36,6 +65,7 @@
         <button id="refresh" type="button">Refresh</button>
       </div>
     </main>
+    <script src="channel-routes.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -369,6 +369,42 @@ test("HTTP API enqueues, claims, records, and reports helper jobs", async () => 
   }
 });
 
+test("HTTP API accepts extension-supplied event mappings", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-http-runtime-mapping-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    let baseUrl;
+    const emptyConfig = { ...sampleConfig, mappings: [] };
+    ({ server, baseUrl } = await startHelperHttpServer(store, emptyConfig));
+
+    const eventResponse = await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({
+        alert: samplePayload,
+        mappings: [
+          {
+            id: "popup-route-222222222222222222",
+            enabled: true,
+            sourceUrl,
+            destinationUrls: [firstDestinationUrl],
+            prefix: "[copied-alert]"
+          }
+        ]
+      })
+    });
+    assert.equal(eventResponse.status, 202);
+    const eventBody = await eventResponse.json();
+    assert.equal(eventBody.createdJobs.length, 1);
+    assert.equal(eventBody.createdJobs[0].destinationUrl, firstDestinationUrl);
+    assert.equal(eventBody.createdJobs[0].messageText.includes("[copied-alert]"), true);
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("HTTP API rejects requests without helper token", async () => {
   const dir = await mkdtemp(join(tmpdir(), "helper-http-auth-missing-"));
   let server;
