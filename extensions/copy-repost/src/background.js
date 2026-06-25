@@ -5,6 +5,7 @@ const clientId = "copy-repost-extension";
 const pollAlarmName = "copy-repost-poll";
 const pollAlarmPeriodMinutes = 1;
 const configCacheTtlMs = 60_000;
+const discordTabLoadTimeoutMs = 90_000;
 const listenStorageKey = "listenChannelUrls";
 const postStorageKey = "postChannelUrls";
 const routeHelpers = globalThis.CopyRepostChannelRoutes;
@@ -250,7 +251,7 @@ async function pingContentScript(tabId) {
 }
 
 async function waitForTabComplete(tabId) {
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + discordTabLoadTimeoutMs;
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
     if (tab.status === "complete") {

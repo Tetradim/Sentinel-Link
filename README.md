@@ -174,6 +174,8 @@ Create a local config file for real channels:
 apps/external-helper/config/config.local.json
 ```
 
+`config.local.json` is intentionally gitignored. Keep real workspace/server channel routing there for the local machine; commit reusable examples or documentation instead.
+
 Example:
 
 ```json
@@ -321,7 +323,7 @@ Important queue states:
 - `skipped_duplicate`: duplicate source message was ignored.
 - `no_matching_mapping`: payload did not match any enabled mapping and was not marked duplicate.
 
-Leases expire after 30 seconds. Expired `in_progress` jobs become claimable again without being lost.
+Leases expire after 180 seconds. Expired `in_progress` jobs become claimable again without being lost. This longer lease gives cold Discord destination tabs time to load and expose the message composer before another client retries the same job.
 
 ## Local Setup
 
@@ -396,6 +398,16 @@ The **Post** input stores destination channel URLs.
 - **Revert** removes only the most recently locked Post URL and shows the previous saved Post URL when one exists.
 
 Popup routes are active as soon as at least one Listen or Post URL is saved. If Listen URLs exist but no Post URL exists, matching alerts are not submitted and the extension status reports that no post channels are configured.
+
+## Runtime Timing
+
+The copy/repost workflow uses longer waits than a normal localhost API because Discord can cold-load slowly:
+
+- Helper job lease: 180 seconds.
+- Destination Discord tab load wait: 90 seconds.
+- Destination composer lookup wait: 60 seconds.
+
+If Discord still reports `Discord tab did not finish loading` or `Discord composer not found`, reload the destination channel manually once, confirm the message box is visible, then let the helper retry or submit a new alert.
 
 ## End-To-End Flow
 

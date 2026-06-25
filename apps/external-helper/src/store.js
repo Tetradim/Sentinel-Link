@@ -10,7 +10,7 @@ import {
 import { nextRetryDelayMs } from "./retry.js";
 
 const emptyState = () => ({ jobs: [], events: [], seen: {} });
-const defaultLeaseMs = 30_000;
+const defaultLeaseMs = 180_000;
 
 export async function createJsonStore(filePath) {
   let state = await loadState(filePath);

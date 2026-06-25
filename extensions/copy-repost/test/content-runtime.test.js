@@ -144,6 +144,15 @@ test("send confirmation accepts empty composer text", async () => {
   assert.equal(confirmed, true);
 });
 
+test("waitForComposer returns the Discord message textbox", async () => {
+  const { document, editor } = createDocument({ editorText: "" });
+  const runtime = await loadContentRuntime(document);
+
+  const found = await runtime.waitForComposer();
+
+  assert.equal(found, editor);
+});
+
 test("send confirmation accepts new matching visible message", async () => {
   const oldMessage = createMessage("chat-messages-222-111", "Earlier alert");
   const { document, editor } = createDocument({

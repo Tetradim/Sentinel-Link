@@ -166,7 +166,10 @@ test("store makes expired in-progress job claimable after reload without extra a
     assert.equal(firstClaim.attempt, 1);
 
     const reloaded = await createJsonStore(statePath);
-    const secondClaim = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:00:31.000Z"));
+    const stillLeased = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:00:31.000Z"));
+    assert.equal(stillLeased, null);
+
+    const secondClaim = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:03:01.000Z"));
 
     assert.equal(secondClaim.id, firstClaim.id);
     assert.equal(secondClaim.attempt, 2);
@@ -227,7 +230,10 @@ test("store rejects stale claimant after lease expiry and reclaim", async () => 
     const firstClaim = await store.claimNextJob("client-1", new Date("2030-01-01T17:00:00.000Z"));
 
     const reloaded = await createJsonStore(statePath);
-    const secondClaim = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:00:31.000Z"));
+    const stillLeased = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:00:31.000Z"));
+    assert.equal(stillLeased, null);
+
+    const secondClaim = await reloaded.claimNextJob("client-2", new Date("2030-01-01T17:03:01.000Z"));
     assert.equal(secondClaim.id, firstClaim.id);
     assert.equal(secondClaim.clientId, "client-2");
 
@@ -235,7 +241,7 @@ test("store rejects stale claimant after lease expiry and reclaim", async () => 
       reloaded.recordJobResult({
         jobId: firstClaim.id,
         status: "sent",
-        now: new Date("2030-01-01T17:00:32.000Z")
+        now: new Date("2030-01-01T17:03:02.000Z")
       }),
       /clientId/
     );
@@ -245,7 +251,7 @@ test("store rejects stale claimant after lease expiry and reclaim", async () => 
         jobId: firstClaim.id,
         status: "sent",
         clientId: "client-1",
-        now: new Date("2030-01-01T17:00:32.000Z")
+        now: new Date("2030-01-01T17:03:02.000Z")
       }),
       /different client/
     );

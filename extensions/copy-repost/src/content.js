@@ -10,6 +10,7 @@
     '[data-slate-editor="true"][contenteditable="true"]',
     '[aria-label*="Message"][contenteditable="true"]'
   ];
+  const composerWaitTimeoutMs = 60_000;
   const submittedMessageKeys = new Set();
   const pendingMessageKeys = new Set();
 
@@ -18,6 +19,7 @@
       captureVisibleMessageKeys,
       messageNodeTextMatches,
       normalizeComposerText,
+      waitForComposer,
       waitForSendConfirmation
     };
     return;
@@ -159,7 +161,7 @@
   }
 
   async function waitForComposer() {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + composerWaitTimeoutMs;
     while (Date.now() < deadline) {
       const editor = findComposer();
       if (editor && isVisible(editor)) {
