@@ -78,6 +78,18 @@
     return normalizeUrlList(listenChannelUrls).length > 0 || normalizeUrlList(postChannelUrls).length > 0;
   }
 
+  function toStoredUrlOptions(urls, emptyLabel) {
+    const normalizedUrls = normalizeUrlList(urls);
+    if (normalizedUrls.length === 0) {
+      return [{ value: "", label: emptyLabel }];
+    }
+
+    return normalizedUrls.map((url, index) => ({
+      value: url,
+      label: `${index + 1}. ${url}`
+    }));
+  }
+
   function normalizeUrlList(urls) {
     if (!Array.isArray(urls)) {
       return [];
@@ -103,6 +115,7 @@
     hasStoredRoutes,
     normalizeDiscordChannelUrl,
     normalizeUrlList,
-    revertLastChannelUrl
+    revertLastChannelUrl,
+    toStoredUrlOptions
   };
 })(globalThis);

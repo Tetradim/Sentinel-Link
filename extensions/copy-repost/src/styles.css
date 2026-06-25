@@ -56,8 +56,13 @@ h2 {
   color: #323f4b;
 }
 
+.field.compact {
+  gap: 4px;
+}
+
 input[type="password"],
-input[type="text"] {
+input[type="text"],
+select {
   width: 100%;
   min-width: 0;
   height: 34px;
@@ -67,6 +72,18 @@ input[type="text"] {
   font: 13px ui-monospace, "SFMono-Regular", Consolas, monospace;
   background: #ffffff;
   color: #102a43;
+}
+
+select {
+  appearance: auto;
+  padding-right: 6px;
+  text-overflow: ellipsis;
+}
+
+select:disabled {
+  background: #f5f7fa;
+  color: #829ab1;
+  cursor: default;
 }
 
 input.locked {

@@ -12,11 +12,13 @@ const listenRevertButton = document.querySelector("#listen-revert");
 const listenRevertAllButton = document.querySelector("#listen-revert-all");
 const listenMessage = document.querySelector("#listen-message");
 const listenSummary = document.querySelector("#listen-summary");
+const listenStoredUrlsSelect = document.querySelector("#listen-stored-urls");
 const postUrlInput = document.querySelector("#post-url");
 const postLockButton = document.querySelector("#post-lock");
 const postRevertButton = document.querySelector("#post-revert");
 const postMessage = document.querySelector("#post-message");
 const postSummary = document.querySelector("#post-summary");
+const postStoredUrlsSelect = document.querySelector("#post-stored-urls");
 const helperStatus = document.querySelector("#helper-status");
 const lastStatus = document.querySelector("#last-status");
 const saveButton = document.querySelector("#save");
@@ -164,10 +166,23 @@ function renderChannelState(state) {
   const postUrls = routes.normalizeUrlList(state[postStorageKey]);
   listenSummary.textContent = summarizeUrls(listenUrls, "listen URL");
   postSummary.textContent = summarizeUrls(postUrls, "post URL");
+  renderUrlOptions(listenStoredUrlsSelect, routes.toStoredUrlOptions(listenUrls, "No listen URLs locked"));
+  renderUrlOptions(postStoredUrlsSelect, routes.toStoredUrlOptions(postUrls, "No post URLs locked"));
   if (!postUrlInput.value && postUrls.length > 0) {
     postUrlInput.value = postUrls.at(-1);
     postUrlInput.classList.add("locked");
   }
+}
+
+function renderUrlOptions(select, options) {
+  select.replaceChildren();
+  for (const option of options) {
+    const node = document.createElement("option");
+    node.value = option.value;
+    node.textContent = option.label;
+    select.append(node);
+  }
+  select.disabled = options.length === 1 && !options[0].value;
 }
 
 function summarizeUrls(urls, singularLabel) {

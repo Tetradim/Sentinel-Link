@@ -376,6 +376,7 @@ The extension popup shows:
 - last background status
 - Listen URL input with Lock, Revert, and Revert All
 - Post URL input with Lock and Revert
+- Stored URL dropdowns for both Listen and Post
 
 ### Popup Channel Inputs
 
@@ -384,6 +385,7 @@ The **Listen** input stores Discord source channel URLs.
 - Paste a Discord channel URL.
 - Click **Lock**.
 - The URL is normalized, saved, and cleared from the input.
+- Open **Stored Listen URLs** to view every Listen URL currently saved.
 - A duplicate Listen URL shows an error and is not saved.
 - **Revert** removes the most recently locked Listen URL and places it back in the input.
 - Repeated **Revert** clicks continue walking backward through the Listen stack.
@@ -394,6 +396,7 @@ The **Post** input stores destination channel URLs.
 - Paste a Discord channel URL.
 - Click **Lock**.
 - The URL is normalized, saved, and left visible in the input with a grey locked style.
+- Open **Stored Post URLs** to view every Post URL currently saved.
 - Typing or pasting a new URL removes the locked styling so another destination can be added.
 - **Revert** removes only the most recently locked Post URL and shows the previous saved Post URL when one exists.
 

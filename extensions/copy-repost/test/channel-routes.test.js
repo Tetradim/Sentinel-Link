@@ -84,3 +84,32 @@ test("channel routes build one mapping per listen URL with all post URLs", async
     }
   ]);
 });
+
+test("channel routes format stored URL dropdown options", async () => {
+  const routes = await loadRoutes();
+
+  const options = routes.toStoredUrlOptions(
+    [
+      "https://discord.com/channels/111/222",
+      "https://discord.com/channels/333/444"
+    ],
+    "No listen URLs locked"
+  );
+
+  assert.deepEqual(fromSandbox(options), [
+    {
+      value: "https://discord.com/channels/111/222",
+      label: "1. https://discord.com/channels/111/222"
+    },
+    {
+      value: "https://discord.com/channels/333/444",
+      label: "2. https://discord.com/channels/333/444"
+    }
+  ]);
+  assert.deepEqual(fromSandbox(routes.toStoredUrlOptions([], "No post URLs locked")), [
+    {
+      value: "",
+      label: "No post URLs locked"
+    }
+  ]);
+});
