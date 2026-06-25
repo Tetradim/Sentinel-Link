@@ -112,6 +112,9 @@ function createElement({ id = "", text = "", attrs = {}, children = [] } = {}) {
       if (name === "id") return this.id || null;
       return this.attrs[name] ?? null;
     },
+    matches(selector) {
+      return matchesSelector(this, selector);
+    },
     focus() {
       this.focused = true;
     },
@@ -167,7 +170,7 @@ test("content runtime exposes a version for background reinjection checks", asyn
   const { document } = createDocument();
   const { runtime } = await loadContentRuntime(document);
 
-  assert.equal(runtime.contentScriptVersion, "0.1.3");
+  assert.equal(runtime.contentScriptVersion, "0.1.5");
 });
 
 test("send confirmation accepts empty composer text", async () => {
@@ -252,6 +255,38 @@ test("verifyComposerDraft accepts matching trusted input text", async () => {
   const result = runtime.verifyComposerDraft(job.messageText);
 
   assert.equal(result.ok, true);
+});
+
+test("waitForComposerDraft waits for Discord to reflect trusted input", async () => {
+  const job = createJob();
+  let readCount = 0;
+  const { document } = createDocument({
+    editorText: {
+      toString() {
+        readCount += 1;
+        return readCount < 2 ? "" : job.messageText;
+      }
+    }
+  });
+  const { runtime } = await loadContentRuntime(document);
+
+  const result = await runtime.waitForComposerDraft(job.messageText, { timeoutMs: 1000 });
+
+  assert.equal(result.ok, true);
+});
+
+test("messageNodesForAddedNode includes nearest message ancestor for grouped Discord replies", async () => {
+  const groupedChild = createElement({ className: "markup", text: "Second grouped alert" });
+  const groupedMessage = createMessage("chat-messages-222-333", "First grouped alert");
+  groupedMessage.children.push(groupedChild);
+  groupedChild.parentElement = groupedMessage;
+  const { document } = createDocument({ messages: [groupedMessage] });
+  const { runtime } = await loadContentRuntime(document);
+
+  const nodes = runtime.messageNodesForAddedNode(groupedChild);
+
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].id, groupedMessage.id);
 });
 
 function createJob(overrides = {}) {

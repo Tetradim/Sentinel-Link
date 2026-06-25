@@ -1,5 +1,5 @@
 (function runDiscordCopyRepostContentScript() {
-  const contentScriptVersion = "0.1.3";
+  const contentScriptVersion = "0.1.5";
   if (window.__discordCopyRepostContentVersion === contentScriptVersion) {
     return;
   }
@@ -13,6 +13,7 @@
     '[aria-label*="Message"][contenteditable="true"]'
   ];
   const composerWaitTimeoutMs = 60_000;
+  const trustedDraftWaitTimeoutMs = 5_000;
   const trustedSendConfirmationTimeoutMs = 15_000;
   const submittedMessageKeys = new Set();
   const pendingMessageKeys = new Set();
@@ -21,9 +22,11 @@
     window.DiscordCopyRepostContentTest = {
       captureVisibleMessageKeys,
       messageNodeTextMatches,
+      messageNodesForAddedNode,
       normalizeComposerText,
       prepareComposerForTrustedInput,
       verifyComposerDraft,
+      waitForComposerDraft,
       contentScriptVersion,
       waitForComposer,
       waitForSendConfirmation
@@ -53,8 +56,10 @@
     }
 
     if (message?.type === "verify-composer-draft") {
-      sendResponse(verifyComposerDraft(message.expectedText));
-      return false;
+      waitForComposerDraft(message.expectedText)
+        .then((result) => sendResponse(result))
+        .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+      return true;
     }
 
     if (message?.type === "confirm-posted") {
@@ -96,11 +101,52 @@
       return;
     }
 
-    if (node.matches?.(messageSelector)) {
-      inspectMessageNode(node);
+    messageNodesForAddedNode(node).forEach(inspectMessageNode);
+  }
+
+  function messageNodesForAddedNode(node) {
+    if (!isElement(node)) {
+      return [];
     }
 
-    node.querySelectorAll?.(messageSelector).forEach(inspectMessageNode);
+    const nodes = [];
+    if (node.matches?.(messageSelector)) {
+      nodes.push(node);
+    }
+
+    node.querySelectorAll?.(messageSelector).forEach((messageNode) => {
+      nodes.push(messageNode);
+    });
+
+    const ancestor = closestMessageNode(node);
+    if (ancestor) {
+      nodes.push(ancestor);
+    }
+
+    return uniqueElements(nodes);
+  }
+
+  function closestMessageNode(node) {
+    let current = node.parentElement;
+    while (current) {
+      if (current.matches?.(messageSelector)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function uniqueElements(nodes) {
+    const seen = new Set();
+    const unique = [];
+    for (const node of nodes) {
+      if (node && !seen.has(node)) {
+        seen.add(node);
+        unique.push(node);
+      }
+    }
+    return unique;
   }
 
   function inspectMessageNode(messageNode) {
@@ -232,6 +278,20 @@
     }
 
     return { ok: true };
+  }
+
+  async function waitForComposerDraft(expectedText, options = {}) {
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : trustedDraftWaitTimeoutMs;
+    const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 100;
+    const deadline = Date.now() + timeoutMs;
+    let lastResult = verifyComposerDraft(expectedText);
+
+    while (!lastResult.ok && Date.now() < deadline) {
+      await delay(Math.max(0, pollMs));
+      lastResult = verifyComposerDraft(expectedText);
+    }
+
+    return lastResult;
   }
 
   async function confirmPostedMessage(job, beforeMessageKeys = []) {
