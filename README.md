@@ -118,12 +118,15 @@ The content script does not talk to the helper directly. It sends payloads to th
 The background worker:
 
 - reads `/config` from the helper
+- connects to the native messaging launcher when installed
+- starts or adopts the local helper through the native launcher when the extension starts
 - prefers popup-managed Listen/Post routes when any popup channel URLs are locked
 - filters source observations before calling `/events`
 - drops source observations outside the configured freshness window before calling `/events`
 - uses `chrome.alarms` for MV3-compatible polling
 - claims helper jobs through `/jobs/next?clientId=copy-repost-extension`
 - opens or reuses destination Discord tabs
+- optionally routes destination posts through a managed dedicated post window
 - injects content scripts if needed
 - focuses and verifies the visible Discord composer
 - types and sends through Chrome trusted input so Discord receives real composer events
@@ -372,6 +375,33 @@ Token: <generated-token>
 
 Copy that token into the copy/repost extension popup or pass it to the trading bridge helper client.
 
+## Native Lifecycle Host
+
+The Copy/Repost extension can start and stop the helper through Chrome Native Messaging. This is the recommended local mode when you want Chrome/extension lifecycle to own the helper app.
+
+Install the native host registration for the current unpacked extension ID:
+
+```powershell
+.\scripts\install-copy-repost-native-host.ps1 -ExtensionId bfnjhgnbompdhdakmfohoahoohalkhpi
+```
+
+The installer writes a local wrapper under `apps/native-host/bin/`, writes the Chrome native host manifest under `apps/native-host/native-messaging/`, and registers:
+
+```text
+HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tetradim.discord_copy_repost
+```
+
+After installing, reload the unpacked Copy/Repost extension in `chrome://extensions` so the new `nativeMessaging` permission and background worker are active.
+
+Native lifecycle behavior:
+
+- Extension install/startup connects to `com.tetradim.discord_copy_repost`.
+- The native host starts `apps/external-helper/src/main.js` when port `17654` is closed.
+- If a managed helper is already listening on port `17654`, the native host adopts it.
+- The native host starts a watchdog that kills the helper if the native host disappears unexpectedly.
+- The popup **Shutdown** button disables the copier, clears polling, optionally closes managed destination windows/tabs, stops the helper, and stops the watchdog.
+- If Chrome closes and the native pipe disconnects, the native host waits through a grace period before stopping the helper. This avoids killing the helper during transient MV3 service-worker restarts.
+
 ## Loading The Copy/Repost Extension
 
 1. Start the helper.
@@ -390,13 +420,27 @@ When updating an unpacked copy/repost extension, reload it from `chrome://extens
 The extension popup shows:
 
 - enabled/disabled state
+- Shutdown button
 - helper token input
+- launcher connection status
 - helper connection status
 - last background status
 - Freshness window input, in minutes
+- dedicated post-window controls
 - Listen URL input with Lock, Revert, and Revert All
 - Post URL input with Lock and Revert
 - Stored URL dropdowns for both Listen and Post
+
+### Dedicated Post Window
+
+The popup lifecycle controls include:
+
+- **Use dedicated post window**: routes destination jobs to an extension-managed Chrome window.
+- **Keep post window minimized**: minimizes that managed window after opening or selecting a destination tab.
+- **Close post window on shutdown**: closes only managed destination windows/tabs when **Shutdown** is pressed.
+- **Open Post Window**: opens the latest locked Post URL in the managed post window.
+
+The dedicated post window uses the same Chrome profile as the rest of Chrome. It does not require a second Discord login and does not create a second extension instance. When dedicated mode is enabled, the extension does not activate destination tabs in the user's main Chrome window.
 
 ### Popup Channel Inputs
 

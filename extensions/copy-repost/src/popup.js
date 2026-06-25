@@ -2,13 +2,22 @@ const helperBaseUrl = "http://127.0.0.1:17654";
 const listenStorageKey = "listenChannelUrls";
 const postStorageKey = "postChannelUrls";
 const maxMessageAgeMinutesStorageKey = "maxMessageAgeMinutes";
+const launcherStatusStorageKey = "launcherStatus";
 const routes = globalThis.CopyRepostChannelRoutes;
 const freshness = globalThis.CopyRepostFreshness;
+const destinationWindow = globalThis.CopyRepostDestinationWindow;
+const destinationWindowKeys = destinationWindow.keys;
 
 const enabledInput = document.querySelector("#enabled");
+const shutdownAllButton = document.querySelector("#shutdown-all");
 const tokenInput = document.querySelector("#helper-token");
 const showTokenInput = document.querySelector("#show-token");
 const maxMessageAgeMinutesInput = document.querySelector("#max-message-age-minutes");
+const dedicatedPostWindowEnabledInput = document.querySelector("#dedicated-post-window-enabled");
+const dedicatedPostWindowMinimizedInput = document.querySelector("#dedicated-post-window-minimized");
+const closePostWindowsOnShutdownInput = document.querySelector("#close-post-windows-on-shutdown");
+const openDedicatedPostWindowButton = document.querySelector("#open-dedicated-post-window");
+const lifecycleMessage = document.querySelector("#lifecycle-message");
 const listenUrlInput = document.querySelector("#listen-url");
 const listenLockButton = document.querySelector("#listen-lock");
 const listenRevertButton = document.querySelector("#listen-revert");
@@ -22,6 +31,7 @@ const postRevertButton = document.querySelector("#post-revert");
 const postMessage = document.querySelector("#post-message");
 const postSummary = document.querySelector("#post-summary");
 const postStoredUrlsSelect = document.querySelector("#post-stored-urls");
+const launcherStatus = document.querySelector("#launcher-status");
 const helperStatus = document.querySelector("#helper-status");
 const lastStatus = document.querySelector("#last-status");
 const saveButton = document.querySelector("#save");
@@ -29,6 +39,8 @@ const refreshButton = document.querySelector("#refresh");
 
 saveButton.addEventListener("click", saveSettings);
 refreshButton.addEventListener("click", loadState);
+shutdownAllButton.addEventListener("click", shutdownAll);
+openDedicatedPostWindowButton.addEventListener("click", openDedicatedPostWindow);
 listenLockButton.addEventListener("click", lockListenUrl);
 listenRevertButton.addEventListener("click", revertListenUrl);
 listenRevertAllButton.addEventListener("click", revertAllListenUrls);
@@ -49,16 +61,24 @@ async function loadState() {
     "helperToken",
     "lastStatus",
     "lastStatusAt",
+    launcherStatusStorageKey,
+    "launcherStatusState",
+    "launcherStatusAt",
     maxMessageAgeMinutesStorageKey,
     listenStorageKey,
-    postStorageKey
+    postStorageKey,
+    destinationWindowKeys.dedicatedPostWindowEnabled,
+    destinationWindowKeys.dedicatedPostWindowMinimized,
+    destinationWindowKeys.closePostWindowsOnShutdown
   ]);
   enabledInput.checked = state.enabled !== false;
   tokenInput.value = typeof state.helperToken === "string" ? state.helperToken : "";
   maxMessageAgeMinutesInput.value = freshness.normalizeFreshnessWindowMinutes(
     state[maxMessageAgeMinutesStorageKey]
   );
+  renderLifecycleState(state);
   renderChannelState(state);
+  renderLauncherStatus(state);
   renderLastStatus(state);
   await checkHealth(tokenInput.value);
 }
@@ -70,6 +90,9 @@ async function saveSettings() {
     enabled: enabledInput.checked,
     helperToken,
     maxMessageAgeMinutes,
+    [destinationWindowKeys.dedicatedPostWindowEnabled]: dedicatedPostWindowEnabledInput.checked,
+    [destinationWindowKeys.dedicatedPostWindowMinimized]: dedicatedPostWindowMinimizedInput.checked,
+    [destinationWindowKeys.closePostWindowsOnShutdown]: closePostWindowsOnShutdownInput.checked,
     lastStatus: "settings saved",
     lastStatusAt: new Date().toISOString()
   });
@@ -79,6 +102,39 @@ async function saveSettings() {
     lastStatusAt: new Date().toISOString()
   });
   await checkHealth(helperToken);
+}
+
+async function shutdownAll() {
+  shutdownAllButton.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "shutdown-all" });
+    enabledInput.checked = false;
+    setMessage(lifecycleMessage, response?.ok ? "Shutdown complete" : response?.reason || "Shutdown failed", response?.ok ? "ok" : "error");
+    await loadState();
+  } catch (error) {
+    setMessage(lifecycleMessage, readableError(error), "error");
+  } finally {
+    shutdownAllButton.disabled = false;
+  }
+}
+
+async function openDedicatedPostWindow() {
+  await chrome.storage.local.set({
+    [destinationWindowKeys.dedicatedPostWindowEnabled]: dedicatedPostWindowEnabledInput.checked,
+    [destinationWindowKeys.dedicatedPostWindowMinimized]: dedicatedPostWindowMinimizedInput.checked,
+    [destinationWindowKeys.closePostWindowsOnShutdown]: closePostWindowsOnShutdownInput.checked
+  });
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "open-dedicated-post-window" });
+    setMessage(
+      lifecycleMessage,
+      response?.ok ? `Opened ${shortUrl(response.url)}` : response?.reason || "Open failed",
+      response?.ok ? "ok" : "error"
+    );
+    await loadState();
+  } catch (error) {
+    setMessage(lifecycleMessage, readableError(error), "error");
+  }
 }
 
 async function lockListenUrl() {
@@ -182,6 +238,20 @@ function renderChannelState(state) {
     postUrlInput.value = postUrls.at(-1);
     postUrlInput.classList.add("locked");
   }
+}
+
+function renderLifecycleState(state) {
+  const normalized = destinationWindow.normalizeDedicatedWindowState(state);
+  dedicatedPostWindowEnabledInput.checked = normalized.dedicatedPostWindowEnabled;
+  dedicatedPostWindowMinimizedInput.checked = normalized.dedicatedPostWindowMinimized;
+  closePostWindowsOnShutdownInput.checked = normalized.closePostWindowsOnShutdown;
+}
+
+function renderLauncherStatus(state) {
+  const status = state[launcherStatusStorageKey] || "not connected";
+  const at = state.launcherStatusAt ? formatTimestamp(state.launcherStatusAt) : "";
+  launcherStatus.textContent = at ? `${status} (${at})` : status;
+  launcherStatus.dataset.state = state.launcherStatusState || "";
 }
 
 function renderUrlOptions(select, options) {

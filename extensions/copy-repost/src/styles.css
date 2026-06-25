@@ -198,3 +198,18 @@ button {
 button:hover {
   background: #eef2f7;
 }
+
+.danger-button {
+  border-color: #f5b5ad;
+  background: #fff5f5;
+  color: #a61b12;
+}
+
+.danger-button:hover {
+  background: #ffe3e0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}

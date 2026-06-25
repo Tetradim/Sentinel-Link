@@ -7,4 +7,6 @@ Thumbs.db
 
 apps/external-helper/data/
 apps/external-helper/config/config.local.json
+apps/native-host/bin/copy-repost-native-host.cmd
+apps/native-host/native-messaging/*.json
 *.log

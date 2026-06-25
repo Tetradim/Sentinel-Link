@@ -1,0 +1,6 @@
+{
+  "name": "@extension-external/native-host",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true
+}

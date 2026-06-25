@@ -19,6 +19,16 @@ npm run helper:start
 
 The helper listens on `http://127.0.0.1:17654`. Every non-OPTIONS helper request requires the `x-helper-token` header, so the extension will report `missing token` until a token is saved in the popup.
 
+## Native Lifecycle Mode
+
+Install the Chrome native messaging host when you want extension startup/shutdown to own the local helper:
+
+```powershell
+.\scripts\install-copy-repost-native-host.ps1 -ExtensionId bfnjhgnbompdhdakmfohoahoohalkhpi
+```
+
+Reload the unpacked extension after installing the native host. With native lifecycle installed, extension startup starts or adopts the helper, and the popup **Shutdown** button stops parsing, closes managed post surfaces when enabled, stops the helper, and stops the watchdog.
+
 ## Load The Extension
 
 1. Open `chrome://extensions`.
@@ -41,3 +51,4 @@ The helper listens on `http://127.0.0.1:17654`. Every non-OPTIONS helper request
 - Discord UI labels, profile badges, server tags, and button text are not included in reposts.
 - Source messages older than the popup freshness window are ignored before helper queueing.
 - If helper config also enables `freshness`, stale queued jobs are failed server-side instead of being handed back to the extension.
+- Dedicated post-window mode routes destination jobs through a managed same-profile Chrome window so reposting does not activate destination tabs in the main Chrome workspace.

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Discord Copy Repost Helper",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Copies visible Discord alerts from configured channels and reposts them through the visible Discord web composer.",
-  "permissions": ["tabs", "storage", "scripting", "alarms", "debugger"],
+  "permissions": ["tabs", "storage", "scripting", "alarms", "debugger", "nativeMessaging"],
   "host_permissions": [
     "https://discord.com/channels/*",
     "http://127.0.0.1:17654/*"

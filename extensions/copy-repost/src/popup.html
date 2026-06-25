@@ -9,6 +9,8 @@
     <main>
       <h1>Copy Repost</h1>
 
+      <button id="shutdown-all" class="danger-button" type="button">Shutdown</button>
+
       <label class="check-row">
         <input id="enabled" type="checkbox">
         <span>Enabled</span>
@@ -28,6 +30,24 @@
         <span>Freshness window (minutes)</span>
         <input id="max-message-age-minutes" type="number" min="1" max="1440" step="1">
       </label>
+
+      <section class="channel-section" aria-labelledby="lifecycle-heading">
+        <h2 id="lifecycle-heading">Lifecycle</h2>
+        <label class="check-row">
+          <input id="dedicated-post-window-enabled" type="checkbox">
+          <span>Use dedicated post window</span>
+        </label>
+        <label class="check-row">
+          <input id="dedicated-post-window-minimized" type="checkbox">
+          <span>Keep post window minimized</span>
+        </label>
+        <label class="check-row">
+          <input id="close-post-windows-on-shutdown" type="checkbox">
+          <span>Close post window on shutdown</span>
+        </label>
+        <button id="open-dedicated-post-window" type="button">Open Post Window</button>
+        <p id="lifecycle-message" class="message" role="status"></p>
+      </section>
 
       <section class="channel-section" aria-labelledby="listen-heading">
         <h2 id="listen-heading">Listen</h2>
@@ -67,6 +87,8 @@
       </section>
 
       <dl>
+        <dt>Launcher</dt>
+        <dd id="launcher-status">loading</dd>
         <dt>Helper</dt>
         <dd id="helper-status">loading</dd>
         <dt>Status</dt>
@@ -80,6 +102,7 @@
     </main>
     <script src="channel-routes.js"></script>
     <script src="freshness.js"></script>
+    <script src="destination-window.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

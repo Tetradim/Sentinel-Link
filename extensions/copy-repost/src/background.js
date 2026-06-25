@@ -1,7 +1,8 @@
-importScripts("channel-routes.js", "freshness.js");
+importScripts("channel-routes.js", "freshness.js", "destination-window.js");
 
 const helperBaseUrl = "http://127.0.0.1:17654";
 const clientId = "copy-repost-extension";
+const nativeHostName = "com.tetradim.discord_copy_repost";
 const pollAlarmName = "copy-repost-poll";
 const pollAlarmPeriodMinutes = 1;
 const configCacheTtlMs = 60_000;
@@ -10,24 +11,36 @@ const contentScriptVersion = "0.1.6";
 const listenStorageKey = "listenChannelUrls";
 const postStorageKey = "postChannelUrls";
 const maxMessageAgeMinutesStorageKey = "maxMessageAgeMinutes";
+const launcherStatusStorageKey = "launcherStatus";
 const routeHelpers = globalThis.CopyRepostChannelRoutes;
 const freshnessHelpers = globalThis.CopyRepostFreshness;
+const destinationWindowHelpers = globalThis.CopyRepostDestinationWindow;
+const destinationWindowKeys = destinationWindowHelpers.keys;
 
 let pollInFlight = false;
 let sourceConfigCache = null;
+let nativePort = null;
+let nativeRequestId = 0;
+let nativeShutdownRequested = false;
+const pendingNativeRequests = new Map();
 
 void ensurePollAlarm();
 
 chrome.runtime.onInstalled.addListener(() => {
-  Promise.all([initializeStorageDefaults(), ensurePollAlarm()]).then(() => {
+  (async () => {
+    await initializeStorageDefaults();
+    await ensureNativeHelper();
+    await ensurePollAlarm();
     void pollHelper();
-  });
+  })();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  ensurePollAlarm().then(() => {
+  (async () => {
+    await ensureNativeHelper();
+    await ensurePollAlarm();
     void pollHelper();
-  });
+  })();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -39,6 +52,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           void pollHelper();
         }
       })
+      .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+    return true;
+  }
+
+  if (message?.type === "shutdown-all") {
+    shutdownAll()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+    return true;
+  }
+
+  if (message?.type === "open-dedicated-post-window") {
+    openDedicatedPostWindowFromPopup()
+      .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
     return true;
   }
@@ -62,7 +89,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     changes.enabled ||
     changes[listenStorageKey] ||
     changes[postStorageKey] ||
-    changes[maxMessageAgeMinutesStorageKey]
+    changes[maxMessageAgeMinutesStorageKey] ||
+    changes[destinationWindowKeys.dedicatedPostWindowEnabled] ||
+    changes[destinationWindowKeys.dedicatedPostWindowMinimized] ||
+    changes[destinationWindowKeys.closePostWindowsOnShutdown]
   ) {
     sourceConfigCache = null;
     void ensurePollAlarm();
@@ -76,11 +106,17 @@ async function initializeStorageDefaults() {
     "helperToken",
     listenStorageKey,
     postStorageKey,
-    maxMessageAgeMinutesStorageKey
+    maxMessageAgeMinutesStorageKey,
+    destinationWindowKeys.dedicatedPostWindowEnabled,
+    destinationWindowKeys.dedicatedPostWindowMinimized,
+    destinationWindowKeys.closePostWindowsOnShutdown,
+    destinationWindowKeys.managedDestinationWindowId,
+    destinationWindowKeys.managedDestinationTabIds
   ]);
   const defaults = {
     lastStatus: "installed",
-    lastStatusAt: new Date().toISOString()
+    lastStatusAt: new Date().toISOString(),
+    [launcherStatusStorageKey]: "not connected"
   };
 
   if (typeof state.enabled !== "boolean") {
@@ -101,6 +137,26 @@ async function initializeStorageDefaults() {
 
   if (typeof state[maxMessageAgeMinutesStorageKey] !== "number") {
     defaults[maxMessageAgeMinutesStorageKey] = freshnessHelpers.defaultFreshnessWindowMinutes;
+  }
+
+  if (typeof state[destinationWindowKeys.dedicatedPostWindowEnabled] !== "boolean") {
+    defaults[destinationWindowKeys.dedicatedPostWindowEnabled] = false;
+  }
+
+  if (typeof state[destinationWindowKeys.dedicatedPostWindowMinimized] !== "boolean") {
+    defaults[destinationWindowKeys.dedicatedPostWindowMinimized] = true;
+  }
+
+  if (typeof state[destinationWindowKeys.closePostWindowsOnShutdown] !== "boolean") {
+    defaults[destinationWindowKeys.closePostWindowsOnShutdown] = true;
+  }
+
+  if (typeof state[destinationWindowKeys.managedDestinationWindowId] !== "number") {
+    defaults[destinationWindowKeys.managedDestinationWindowId] = null;
+  }
+
+  if (!Array.isArray(state[destinationWindowKeys.managedDestinationTabIds])) {
+    defaults[destinationWindowKeys.managedDestinationTabIds] = [];
   }
 
   await chrome.storage.local.set(defaults);
@@ -170,6 +226,8 @@ async function pollHelper() {
       return;
     }
 
+    await ensureNativeHelper(helperToken);
+
     const response = await helperFetch(`/jobs/next?clientId=${encodeURIComponent(clientId)}`);
     const job = normalizeJob(response);
     if (!job) {
@@ -195,6 +253,114 @@ async function ensurePollAlarm() {
     delayInMinutes: pollAlarmPeriodMinutes,
     periodInMinutes: pollAlarmPeriodMinutes
   });
+}
+
+async function ensureNativeHelper(knownToken = "") {
+  const { enabled = true, helperToken = knownToken || "" } = await chrome.storage.local.get(["enabled", "helperToken"]);
+  const token = normalizeToken(knownToken || helperToken);
+  if (!enabled || !token) {
+    return null;
+  }
+
+  try {
+    nativeShutdownRequested = false;
+    const result = await nativeRequest("ensure-helper", {
+      helperToken: token,
+      port: 17654
+    });
+    await setLauncherStatus(result?.started ? "helper started" : result?.adopted ? "helper adopted" : "helper running", "ok");
+    return result;
+  } catch (error) {
+    await setLauncherStatus(`launcher unavailable: ${readableError(error)}`, "warn");
+    return null;
+  }
+}
+
+function connectNativeHost() {
+  if (nativePort) {
+    return nativePort;
+  }
+  if (!chrome.runtime.connectNative) {
+    throw new Error("native messaging is unavailable");
+  }
+
+  const port = chrome.runtime.connectNative(nativeHostName);
+  nativePort = port;
+  port.onMessage.addListener((message) => {
+    const pending = pendingNativeRequests.get(message?.requestId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    pendingNativeRequests.delete(message.requestId);
+    if (message?.ok === false) {
+      pending.reject(new Error(message.error || "native host request failed"));
+    } else {
+      pending.resolve(message);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    const lastError = chrome.runtime.lastError?.message || "native host disconnected";
+    nativePort = null;
+    for (const pending of pendingNativeRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(lastError));
+    }
+    pendingNativeRequests.clear();
+    if (!nativeShutdownRequested) {
+      void setLauncherStatus(lastError, "warn");
+    }
+  });
+  return port;
+}
+
+function nativeRequest(type, body = {}, timeoutMs = 5000) {
+  const requestId = `${Date.now()}-${++nativeRequestId}`;
+  const port = connectNativeHost();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingNativeRequests.delete(requestId);
+      reject(new Error(`native host request timed out: ${type}`));
+    }, timeoutMs);
+    pendingNativeRequests.set(requestId, { resolve, reject, timer });
+    try {
+      port.postMessage({ requestId, type, ...body });
+    } catch (error) {
+      clearTimeout(timer);
+      pendingNativeRequests.delete(requestId);
+      reject(error);
+    }
+  });
+}
+
+async function shutdownAll() {
+  await chrome.storage.local.set({
+    enabled: false,
+    lastStatus: "shutdown requested",
+    lastStatusAt: new Date().toISOString()
+  });
+  await chrome.alarms.clear(pollAlarmName);
+
+  const state = await chrome.storage.local.get([
+    destinationWindowKeys.closePostWindowsOnShutdown,
+    destinationWindowKeys.managedDestinationWindowId,
+    destinationWindowKeys.managedDestinationTabIds
+  ]);
+  const windowState = destinationWindowHelpers.normalizeDedicatedWindowState(state);
+  if (windowState.closePostWindowsOnShutdown) {
+    await closeManagedDestinationSurfaces(windowState);
+  }
+
+  let nativeResult = null;
+  try {
+    nativeShutdownRequested = true;
+    nativeResult = await nativeRequest("shutdown", { reason: "popup shutdown" }, 10_000);
+    await setLauncherStatus("shutdown", "ok");
+  } catch (error) {
+    await setLauncherStatus(`shutdown incomplete: ${readableError(error)}`, "warn");
+  }
+  await setStatus("shutdown complete");
+  return { ok: true, nativeResult };
 }
 
 async function processJob(job) {
@@ -357,6 +523,19 @@ async function openOrReuseDestinationTab(destinationUrl) {
     throw new Error("Job destinationUrl must be a Discord channel URL");
   }
 
+  const state = await chrome.storage.local.get([
+    postStorageKey,
+    destinationWindowKeys.dedicatedPostWindowEnabled,
+    destinationWindowKeys.dedicatedPostWindowMinimized,
+    destinationWindowKeys.closePostWindowsOnShutdown,
+    destinationWindowKeys.managedDestinationWindowId,
+    destinationWindowKeys.managedDestinationTabIds
+  ]);
+  const windowState = destinationWindowHelpers.normalizeDedicatedWindowState(state);
+  if (windowState.dedicatedPostWindowEnabled) {
+    return openOrReuseDedicatedDestinationTab(destinationUrl, windowState);
+  }
+
   const tabs = await chrome.tabs.query({ url: "https://discord.com/channels/*" });
   const existing = tabs.find((tab) => tab.url && sameDiscordChannel(tab.url, destinationUrl));
   if (existing?.id) {
@@ -364,7 +543,145 @@ async function openOrReuseDestinationTab(destinationUrl) {
     return chrome.tabs.get(existing.id);
   }
 
-  return chrome.tabs.create({ url: destinationUrl, active: true });
+  const tab = await chrome.tabs.create({ url: destinationUrl, active: true });
+  await trackManagedDestinationSurface({ tabIds: [tab.id] });
+  return tab;
+}
+
+async function openDedicatedPostWindowFromPopup() {
+  const state = await chrome.storage.local.get([
+    postStorageKey,
+    destinationWindowKeys.dedicatedPostWindowEnabled,
+    destinationWindowKeys.dedicatedPostWindowMinimized,
+    destinationWindowKeys.closePostWindowsOnShutdown,
+    destinationWindowKeys.managedDestinationWindowId,
+    destinationWindowKeys.managedDestinationTabIds
+  ]);
+  const destinationUrl = destinationWindowHelpers.choosePostWindowUrl({
+    postChannelUrls: state[postStorageKey],
+    fallbackUrl: ""
+  });
+  const windowState = {
+    ...destinationWindowHelpers.normalizeDedicatedWindowState(state),
+    dedicatedPostWindowEnabled: true
+  };
+  await chrome.storage.local.set({
+    [destinationWindowKeys.dedicatedPostWindowEnabled]: true
+  });
+  const tab = await openOrReuseDedicatedDestinationTab(destinationUrl, windowState);
+  await setStatus(`opened post window ${destinationWindowHelpers.normalizeDiscordChannelUrl(destinationUrl).channelId}`);
+  return { ok: true, tabId: tab.id, url: destinationUrl };
+}
+
+async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState) {
+  const normalized = destinationWindowHelpers.normalizeDiscordChannelUrl(destinationUrl);
+  if (!normalized) {
+    throw new Error("Job destinationUrl must be a Discord channel URL");
+  }
+
+  const storedWindow = await getManagedDestinationWindow(windowState.managedDestinationWindowId);
+  if (storedWindow) {
+    const existing = (storedWindow.tabs || []).find((tab) => tab.url && sameDiscordChannel(tab.url, normalized.url));
+    if (existing?.id) {
+      await chrome.tabs.update(existing.id, { active: true });
+      await maybeMinimizeManagedWindow(storedWindow.id, windowState);
+      await trackManagedDestinationSurface({ windowId: storedWindow.id, tabIds: [existing.id] });
+      return chrome.tabs.get(existing.id);
+    }
+
+    const tab = await chrome.tabs.create({
+      windowId: storedWindow.id,
+      url: normalized.url,
+      active: true
+    });
+    await maybeMinimizeManagedWindow(storedWindow.id, windowState);
+    await trackManagedDestinationSurface({ windowId: storedWindow.id, tabIds: [tab.id] });
+    return tab;
+  }
+
+  const createdWindow = await chrome.windows.create({
+    url: normalized.url,
+    type: "normal",
+    focused: false,
+    state: windowState.dedicatedPostWindowMinimized ? "minimized" : "normal"
+  });
+  const tab = createdWindow.tabs?.[0] || (await chrome.tabs.query({ windowId: createdWindow.id })).at(0);
+  if (!tab?.id) {
+    throw new Error("Dedicated post window opened without a Discord tab");
+  }
+  await trackManagedDestinationSurface({ windowId: createdWindow.id, tabIds: [tab.id] });
+  return tab;
+}
+
+async function getManagedDestinationWindow(windowId) {
+  if (!windowId) {
+    return null;
+  }
+  try {
+    return await chrome.windows.get(windowId, { populate: true });
+  } catch {
+    await chrome.storage.local.set({
+      [destinationWindowKeys.managedDestinationWindowId]: null
+    });
+    return null;
+  }
+}
+
+async function maybeMinimizeManagedWindow(windowId, windowState) {
+  if (!windowState.dedicatedPostWindowMinimized) {
+    return;
+  }
+  try {
+    await chrome.windows.update(windowId, { state: "minimized", focused: false });
+  } catch {
+    await chrome.windows.update(windowId, { state: "minimized" });
+  }
+}
+
+async function trackManagedDestinationSurface({ windowId = null, tabIds = [] } = {}) {
+  const state = await chrome.storage.local.get([
+    destinationWindowKeys.managedDestinationWindowId,
+    destinationWindowKeys.managedDestinationTabIds
+  ]);
+  const current = destinationWindowHelpers.normalizeDedicatedWindowState(state);
+  const nextTabIds = Array.from(new Set([
+    ...current.managedDestinationTabIds,
+    ...tabIds.filter((tabId) => Number.isInteger(tabId) && tabId > 0)
+  ]));
+  await chrome.storage.local.set({
+    [destinationWindowKeys.managedDestinationWindowId]: windowId || current.managedDestinationWindowId,
+    [destinationWindowKeys.managedDestinationTabIds]: nextTabIds
+  });
+}
+
+async function closeManagedDestinationSurfaces(windowState) {
+  const tabIdsToRemove = new Set(windowState.managedDestinationTabIds);
+  if (windowState.managedDestinationWindowId) {
+    try {
+      const managedWindow = await chrome.windows.get(windowState.managedDestinationWindowId, { populate: true });
+      for (const tab of managedWindow.tabs || []) {
+        if (tab.id) {
+          tabIdsToRemove.delete(tab.id);
+        }
+      }
+      await chrome.windows.remove(windowState.managedDestinationWindowId);
+    } catch {
+      // Already closed or inaccessible.
+    }
+  }
+
+  for (const tabId of tabIdsToRemove) {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // Already closed or not owned by this run.
+    }
+  }
+
+  await chrome.storage.local.set({
+    [destinationWindowKeys.managedDestinationWindowId]: null,
+    [destinationWindowKeys.managedDestinationTabIds]: []
+  });
 }
 
 async function ensureContentScript(tabId) {
@@ -596,6 +913,14 @@ async function setStatus(lastStatus) {
   await chrome.storage.local.set({
     lastStatus,
     lastStatusAt: new Date().toISOString()
+  });
+}
+
+async function setLauncherStatus(launcherStatus, state = "") {
+  await chrome.storage.local.set({
+    [launcherStatusStorageKey]: launcherStatus,
+    launcherStatusState: state,
+    launcherStatusAt: new Date().toISOString()
   });
 }
 
