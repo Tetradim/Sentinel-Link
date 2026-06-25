@@ -175,7 +175,7 @@ async function processJob(job) {
     const tab = await openOrReuseDestinationTab(job.destinationUrl);
     await waitForTabComplete(tab.id);
     await ensureContentScript(tab.id);
-    sendResult = await chrome.tabs.sendMessage(tab.id, { type: "post-job", job });
+    sendResult = await postJobWithTrustedInput(tab.id, job);
   } catch (error) {
     await reportFailure(job, readableError(error));
     return;
@@ -195,6 +195,119 @@ async function processJob(job) {
     await setStatus(`sent ${job.id}`);
   } catch (error) {
     await setStatus(`sent ${job.id}; result report failed: ${readableError(error)}`);
+  }
+}
+
+async function postJobWithTrustedInput(tabId, job) {
+  const prepareResult = await chrome.tabs.sendMessage(tabId, { type: "prepare-composer", job });
+  if (!prepareResult?.ok) {
+    return prepareResult;
+  }
+
+  await typeRepostWithDebugger(tabId, job.messageText);
+
+  const draftResult = await chrome.tabs.sendMessage(tabId, {
+    type: "verify-composer-draft",
+    expectedText: job.messageText
+  });
+  if (!draftResult?.ok) {
+    return draftResult;
+  }
+
+  await pressEnterWithDebugger(tabId);
+
+  return chrome.tabs.sendMessage(tabId, {
+    type: "confirm-posted",
+    job,
+    beforeMessageKeys: Array.isArray(prepareResult.beforeMessageKeys) ? prepareResult.beforeMessageKeys : []
+  });
+}
+
+async function typeRepostWithDebugger(tabId, text) {
+  await withDebugger(tabId, async (target) => {
+    await dispatchControlA(target);
+    await dispatchKey(target, {
+      type: "rawKeyDown",
+      key: "Backspace",
+      code: "Backspace",
+      windowsVirtualKeyCode: 8
+    });
+    await dispatchKey(target, {
+      type: "keyUp",
+      key: "Backspace",
+      code: "Backspace",
+      windowsVirtualKeyCode: 8
+    });
+    await chrome.debugger.sendCommand(target, "Input.insertText", { text });
+  });
+  await delay(150);
+}
+
+async function pressEnterWithDebugger(tabId) {
+  await withDebugger(tabId, async (target) => {
+    await dispatchKey(target, {
+      type: "rawKeyDown",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13
+    });
+    await dispatchKey(target, {
+      type: "keyUp",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13
+    });
+  });
+}
+
+async function dispatchControlA(target) {
+  await dispatchKey(target, {
+    type: "rawKeyDown",
+    key: "Control",
+    code: "ControlLeft",
+    windowsVirtualKeyCode: 17,
+    modifiers: 2
+  });
+  await dispatchKey(target, {
+    type: "rawKeyDown",
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    modifiers: 2
+  });
+  await dispatchKey(target, {
+    type: "keyUp",
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    modifiers: 2
+  });
+  await dispatchKey(target, {
+    type: "keyUp",
+    key: "Control",
+    code: "ControlLeft",
+    windowsVirtualKeyCode: 17
+  });
+}
+
+async function dispatchKey(target, options) {
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    nativeVirtualKeyCode: options.windowsVirtualKeyCode,
+    ...options
+  });
+}
+
+async function withDebugger(tabId, callback) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  try {
+    return await callback(target);
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+    } catch {
+      // The tab can close or detach after the send attempt; the job result still reports the original error.
+    }
   }
 }
 

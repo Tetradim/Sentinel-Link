@@ -8,16 +8,38 @@ const contentPath = path.resolve("extensions/copy-repost/src/content.js");
 
 async function loadContentRuntime(document) {
   const source = await readFile(contentPath, "utf8");
+  const selection = {
+    selectedNode: null,
+    removeAllRanges() {
+      this.selectedNode = null;
+    },
+    addRange(range) {
+      this.selectedNode = range.selectedNode;
+    }
+  };
+  if (typeof document.createRange !== "function") {
+    document.createRange = () => ({
+      selectedNode: null,
+      selectNodeContents(node) {
+        this.selectedNode = node;
+      },
+      collapse() {}
+    });
+  }
   const sandbox = {
     window: {
       __DISCORD_COPY_REPOST_TEST__: true,
       getComputedStyle: (node) => node.style ?? {},
+      getSelection: () => selection,
       setTimeout(callback) {
         callback();
         return 0;
       }
     },
     document,
+    location: {
+      href: "https://discord.com/channels/1508501048610914406/1519744142471725136"
+    },
     URL,
     Date,
     console,
@@ -31,7 +53,10 @@ async function loadContentRuntime(document) {
 
   vm.runInNewContext(source, sandbox, { filename: contentPath });
 
-  return sandbox.window.DiscordCopyRepostContentTest;
+  return {
+    runtime: sandbox.window.DiscordCopyRepostContentTest,
+    selection
+  };
 }
 
 function createDocument({ editorText = "", messages = [] } = {}) {
@@ -87,6 +112,9 @@ function createElement({ id = "", text = "", attrs = {}, children = [] } = {}) {
       if (name === "id") return this.id || null;
       return this.attrs[name] ?? null;
     },
+    focus() {
+      this.focused = true;
+    },
     querySelector(selector) {
       return this.querySelectorAll(selector)[0] ?? null;
     },
@@ -123,7 +151,7 @@ function matchesSelector(node, selector) {
 
 test("send confirmation rejects non-empty changed composer text", async () => {
   const { document, editor } = createDocument({ editorText: "Partial alert text" });
-  const runtime = await loadContentRuntime(document);
+  const { runtime } = await loadContentRuntime(document);
 
   const confirmed = await runtime.waitForSendConfirmation(
     editor,
@@ -137,7 +165,7 @@ test("send confirmation rejects non-empty changed composer text", async () => {
 
 test("send confirmation accepts empty composer text", async () => {
   const { document, editor } = createDocument({ editorText: "" });
-  const runtime = await loadContentRuntime(document);
+  const { runtime } = await loadContentRuntime(document);
 
   const confirmed = await runtime.waitForSendConfirmation(editor, "Full alert text", new Set(), { timeoutMs: 0 });
 
@@ -146,7 +174,7 @@ test("send confirmation accepts empty composer text", async () => {
 
 test("waitForComposer returns the Discord message textbox", async () => {
   const { document, editor } = createDocument({ editorText: "" });
-  const runtime = await loadContentRuntime(document);
+  const { runtime } = await loadContentRuntime(document);
 
   const found = await runtime.waitForComposer();
 
@@ -159,7 +187,7 @@ test("send confirmation accepts new matching visible message", async () => {
     editorText: "Full alert text",
     messages: [oldMessage]
   });
-  const runtime = await loadContentRuntime(document);
+  const { runtime } = await loadContentRuntime(document);
   const beforeMessageKeys = runtime.captureVisibleMessageKeys();
 
   document.addMessage(createMessage("chat-messages-222-222", "Full alert text with complete payload"));
@@ -173,3 +201,57 @@ test("send confirmation accepts new matching visible message", async () => {
 
   assert.equal(confirmed, true);
 });
+
+test("prepareComposerForTrustedInput focuses and selects an empty composer", async () => {
+  const { document, editor } = createDocument({ editorText: "" });
+  const { runtime, selection } = await loadContentRuntime(document);
+
+  const result = await runtime.prepareComposerForTrustedInput(createJob());
+
+  assert.equal(result.ok, true);
+  assert.equal(result.beforeMessageKeys.length, 0);
+  assert.equal(editor.focused, true);
+  assert.equal(selection.selectedNode, editor);
+});
+
+test("prepareComposerForTrustedInput rejects a non-repost user draft", async () => {
+  const { document } = createDocument({ editorText: "user typed draft" });
+  const { runtime } = await loadContentRuntime(document);
+
+  const result = await runtime.prepareComposerForTrustedInput(createJob());
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "Discord composer is not empty");
+});
+
+test("prepareComposerForTrustedInput allows replacing a stale repost draft", async () => {
+  const { document } = createDocument({
+    editorText:
+      "[copied-alert]\nSource: https://discord.com/channels/1508501048610914406/1518453268169101402\n\nOld alert"
+  });
+  const { runtime } = await loadContentRuntime(document);
+
+  const result = await runtime.prepareComposerForTrustedInput(createJob());
+
+  assert.equal(result.ok, true);
+  assert.equal(result.replacingDraft, true);
+});
+
+test("verifyComposerDraft accepts matching trusted input text", async () => {
+  const job = createJob();
+  const { document } = createDocument({ editorText: job.messageText });
+  const { runtime } = await loadContentRuntime(document);
+
+  const result = runtime.verifyComposerDraft(job.messageText);
+
+  assert.equal(result.ok, true);
+});
+
+function createJob(overrides = {}) {
+  return {
+    destinationUrl: "https://discord.com/channels/1508501048610914406/1519744142471725136",
+    messageText:
+      "[copied-alert]\nSource: https://discord.com/channels/1508501048610914406/1518453268169101402\nFrom: [ 12:09 PM ]\n\nBTO AMD 200C 6/26/2026 @ 0.10 CODX-PHYS-20260624-114724 position_size_block",
+    ...overrides
+  };
+}

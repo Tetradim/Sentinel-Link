@@ -18,6 +18,7 @@ This project is intentionally UI-visible and permission-bound.
 - It does not read Discord user tokens, bot tokens, `localStorage`, or `sessionStorage`.
 - It does not call hidden Discord APIs.
 - It does not bypass Discord channel permissions.
+- The copy/repost extension uses Chrome's `debugger` permission only to send visible keyboard/text input to the active Discord destination composer. It does not inspect cookies, storage, passwords, or Discord tokens.
 - Attachments and images are not re-uploaded. Visible Discord CDN/media URLs are included as text when available.
 - The localhost helper requires an `x-helper-token` header for every non-OPTIONS request.
 
@@ -123,10 +124,11 @@ The background worker:
 - claims helper jobs through `/jobs/next?clientId=copy-repost-extension`
 - opens or reuses destination Discord tabs
 - injects content scripts if needed
-- posts through the visible Discord composer
+- focuses and verifies the visible Discord composer
+- types and sends through Chrome trusted input so Discord receives real composer events
 - reports `sent` or `failed` through `/jobs/:id/result`
 
-Before it posts, the content script verifies it is on the same Discord channel as the job destination. After it clicks Send or dispatches Enter, it only reports success when the composer clears or a new visible matching message appears.
+Before it posts, the content script verifies it is on the same Discord channel as the job destination. It protects normal user drafts by refusing to overwrite non-repost composer text. Repost drafts created by the extension can be replaced so a failed retry does not jam the queue. After trusted input sends the message, the extension only reports success when the composer clears or a new visible matching message appears.
 
 ### 3. Trading Bridge Integration
 
@@ -368,6 +370,8 @@ Copy that token into the copy/repost extension popup or pass it to the trading b
 9. Keep the extension enabled.
 10. Open each configured Discord source channel in Chrome.
 
+When updating an unpacked copy/repost extension, reload it from `chrome://extensions` after pulling code changes. Manifest, service worker, permission, and content-script changes are not applied reliably until the unpacked extension is reloaded.
+
 The extension popup shows:
 
 - enabled/disabled state
@@ -423,9 +427,11 @@ If Discord still reports `Discord tab did not finish loading` or `Discord compos
 7. The helper dedupes the source message and creates one `queued` job per destination URL.
 8. The background worker polls `/jobs/next?clientId=copy-repost-extension`.
 9. The background worker opens or reuses the destination Discord tab.
-10. The content script validates the destination channel, writes to the composer, sends, and confirms.
-11. The background worker reports `sent` or `failed` to `/jobs/:id/result`.
-12. The helper either finalizes the job or schedules an exponential-backoff retry.
+10. The content script validates the destination channel and focuses the composer.
+11. The background worker uses trusted Chrome input to clear extension-created drafts, type the repost, and press Enter.
+12. The content script confirms that Discord accepted the post.
+13. The background worker reports `sent` or `failed` to `/jobs/:id/result`.
+14. The helper either finalizes the job or schedules an exponential-backoff retry.
 
 ## What Each Piece Monitors
 
@@ -459,8 +465,14 @@ If Discord still reports `Discord tab did not finish loading` or `Discord compos
 
 `Discord composer is not empty`
 
-- The extension refuses to overwrite text already in the destination composer.
-- Clear the composer and let the helper retry.
+- The extension refuses to overwrite normal user text already in the destination composer.
+- Extension-created repost drafts are replaced automatically after the current version is reloaded in Chrome.
+- If this error persists after reload, clear the composer and let the helper retry.
+
+`Discord composer did not contain the expected repost text`
+
+- Chrome trusted input did not reach the active Discord composer.
+- Click the destination channel message box once, reload the copy/repost extension, and let the helper retry.
 
 `retry_wait`
 

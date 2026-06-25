@@ -11,6 +11,7 @@
     '[aria-label*="Message"][contenteditable="true"]'
   ];
   const composerWaitTimeoutMs = 60_000;
+  const trustedSendConfirmationTimeoutMs = 15_000;
   const submittedMessageKeys = new Set();
   const pendingMessageKeys = new Set();
 
@@ -19,6 +20,8 @@
       captureVisibleMessageKeys,
       messageNodeTextMatches,
       normalizeComposerText,
+      prepareComposerForTrustedInput,
+      verifyComposerDraft,
       waitForComposer,
       waitForSendConfirmation
     };
@@ -33,6 +36,25 @@
 
     if (message?.type === "post-job") {
       postJobToComposer(message.job)
+        .then((result) => sendResponse(result))
+        .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+      return true;
+    }
+
+    if (message?.type === "prepare-composer") {
+      prepareComposerForTrustedInput(message.job)
+        .then((result) => sendResponse(result))
+        .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+      return true;
+    }
+
+    if (message?.type === "verify-composer-draft") {
+      sendResponse(verifyComposerDraft(message.expectedText));
+      return false;
+    }
+
+    if (message?.type === "confirm-posted") {
+      confirmPostedMessage(message.job, message.beforeMessageKeys)
         .then((result) => sendResponse(result))
         .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
       return true;
@@ -160,6 +182,75 @@
     return { ok: false, reason: "Unable to verify Discord send after Enter fallback" };
   }
 
+  async function prepareComposerForTrustedInput(job) {
+    const validation = validatePostJob(job);
+    if (validation) {
+      return validation;
+    }
+
+    const editor = await waitForComposer();
+    const currentText = composerText(editor).trim();
+    const matchingDraft = composerDraftMatches(editor, job.messageText);
+    if (currentText && !matchingDraft && !isRepostDraft(currentText)) {
+      return { ok: false, reason: "Discord composer is not empty" };
+    }
+
+    editor.focus();
+    selectComposerContents(editor);
+
+    return {
+      ok: true,
+      beforeMessageKeys: Array.from(captureVisibleMessageKeys()),
+      replacingDraft: Boolean(currentText && !matchingDraft)
+    };
+  }
+
+  function validatePostJob(job) {
+    if (!job || typeof job.messageText !== "string" || !job.messageText.trim()) {
+      return { ok: false, reason: "job messageText is required" };
+    }
+
+    if (!sameDiscordChannel(location.href, job.destinationUrl)) {
+      return { ok: false, reason: "Destination channel mismatch" };
+    }
+
+    return null;
+  }
+
+  function verifyComposerDraft(expectedText) {
+    const editor = findComposer();
+    if (!editor || !isVisible(editor)) {
+      return { ok: false, reason: "Discord composer not found" };
+    }
+
+    if (!composerDraftMatches(editor, expectedText)) {
+      return { ok: false, reason: "Discord composer did not contain the expected repost text" };
+    }
+
+    return { ok: true };
+  }
+
+  async function confirmPostedMessage(job, beforeMessageKeys = []) {
+    const validation = validatePostJob(job);
+    if (validation) {
+      return validation;
+    }
+
+    const editor = await waitForComposer();
+    const confirmed = await waitForSendConfirmation(
+      editor,
+      job.messageText,
+      new Set(Array.isArray(beforeMessageKeys) ? beforeMessageKeys : []),
+      { timeoutMs: trustedSendConfirmationTimeoutMs }
+    );
+
+    if (!confirmed) {
+      return { ok: false, reason: "Unable to verify Discord send after trusted input" };
+    }
+
+    return successfulPostResult(job);
+  }
+
   async function waitForComposer() {
     const deadline = Date.now() + composerWaitTimeoutMs;
     while (Date.now() < deadline) {
@@ -262,8 +353,30 @@
     selection.addRange(range);
   }
 
+  function selectComposerContents(editor) {
+    const selection = window.getSelection?.();
+    const range = document.createRange?.();
+    if (!selection || !range) {
+      return;
+    }
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   function composerText(editor) {
     return editor.innerText || editor.textContent || "";
+  }
+
+  function composerDraftMatches(editor, expectedText) {
+    const currentText = normalizeComposerText(composerText(editor));
+    const expected = normalizeComposerText(expectedText);
+    return Boolean(currentText && expected && (currentText === expected || currentText.includes(expected)));
+  }
+
+  function isRepostDraft(text) {
+    const normalized = normalizeComposerText(text);
+    return normalized.startsWith("[copied-alert]") || normalized.includes("Source: https://discord.com/channels/");
   }
 
   function normalizeComposerText(text) {
