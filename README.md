@@ -400,6 +400,7 @@ Native lifecycle behavior:
 - The native host starts `apps/external-helper/src/main.js` when port `17654` is closed.
 - If a managed helper is already listening on port `17654`, the native host adopts it.
 - The native host starts a watchdog that kills the helper if the native host disappears unexpectedly.
+- The popup **Launch** button manually starts or adopts the helper, re-enables the copier, and restores polling when Chrome startup does not wake the helper automatically.
 - The popup **Shutdown** button disables the copier, clears polling, optionally closes managed destination windows/tabs, stops the helper, and stops the watchdog.
 - If Chrome closes and the native pipe disconnects, the native host waits through a grace period before stopping the helper. This avoids killing the helper during transient MV3 service-worker restarts.
 
@@ -421,6 +422,7 @@ When updating an unpacked copy/repost extension, reload it from `chrome://extens
 The extension popup shows:
 
 - enabled/disabled state
+- Launch button
 - Shutdown button
 - helper token input
 - launcher connection status

@@ -27,7 +27,7 @@ Install the Chrome native messaging host when you want extension startup/shutdow
 .\scripts\install-copy-repost-native-host.ps1 -ExtensionId bfnjhgnbompdhdakmfohoahoohalkhpi
 ```
 
-Reload the unpacked extension after installing the native host. With native lifecycle installed, extension startup starts or adopts the helper, and the popup **Shutdown** button stops parsing, closes managed post surfaces when enabled, stops the helper, and stops the watchdog.
+Reload the unpacked extension after installing the native host. With native lifecycle installed, extension startup starts or adopts the helper. The popup **Launch** button manually starts or adopts the helper and restores polling if Chrome startup did not wake the service worker. The popup **Shutdown** button stops parsing, closes managed post surfaces when enabled, stops the helper, and stops the watchdog.
 
 ## Load The Extension
 

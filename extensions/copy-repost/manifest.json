@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Discord Copy Repost Helper",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Copies visible Discord alerts from configured channels and reposts them through the visible Discord web composer.",
   "permissions": ["tabs", "storage", "scripting", "alarms", "debugger", "nativeMessaging"],
   "host_permissions": [

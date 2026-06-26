@@ -36,6 +36,12 @@ h2 {
   color: #1f2933;
 }
 
+.top-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .check-row {
   display: flex;
   align-items: center;

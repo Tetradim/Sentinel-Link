@@ -9,6 +9,7 @@ const destinationWindow = globalThis.CopyRepostDestinationWindow;
 const destinationWindowKeys = destinationWindow.keys;
 
 const enabledInput = document.querySelector("#enabled");
+const launchHelperButton = document.querySelector("#launch-helper");
 const shutdownAllButton = document.querySelector("#shutdown-all");
 const tokenInput = document.querySelector("#helper-token");
 const showTokenInput = document.querySelector("#show-token");
@@ -39,6 +40,7 @@ const refreshButton = document.querySelector("#refresh");
 
 saveButton.addEventListener("click", saveSettings);
 refreshButton.addEventListener("click", loadState);
+launchHelperButton.addEventListener("click", launchHelper);
 shutdownAllButton.addEventListener("click", shutdownAll);
 openDedicatedPostWindowButton.addEventListener("click", openDedicatedPostWindow);
 dedicatedPostWindowEnabledInput.addEventListener("change", saveLifecycleSettings);
@@ -103,6 +105,39 @@ async function saveSettings() {
     lastStatusAt: new Date().toISOString()
   });
   await checkHealth(helperToken);
+}
+
+async function launchHelper() {
+  launchHelperButton.disabled = true;
+  try {
+    const helperToken = tokenInput.value.trim();
+    const maxMessageAgeMinutes = freshness.normalizeFreshnessWindowMinutes(maxMessageAgeMinutesInput.value);
+    enabledInput.checked = true;
+    await chrome.storage.local.set({
+      enabled: true,
+      helperToken,
+      maxMessageAgeMinutes,
+      ...currentLifecycleSettings(),
+      lastStatus: "launch requested",
+      lastStatusAt: new Date().toISOString()
+    });
+    maxMessageAgeMinutesInput.value = maxMessageAgeMinutes;
+
+    const response = await chrome.runtime.sendMessage({
+      type: "launch-helper",
+      helperToken
+    });
+    setMessage(
+      lifecycleMessage,
+      response?.ok ? "Launch complete" : response?.reason || "Launch failed",
+      response?.ok ? "ok" : "error"
+    );
+    await loadState();
+  } catch (error) {
+    setMessage(lifecycleMessage, readableError(error), "error");
+  } finally {
+    launchHelperButton.disabled = false;
+  }
 }
 
 async function saveLifecycleSettings() {

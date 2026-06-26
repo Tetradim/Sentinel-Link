@@ -56,6 +56,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "launch-helper") {
+    launchHelper(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+    return true;
+  }
+
   if (message?.type === "shutdown-all") {
     shutdownAll()
       .then((result) => sendResponse(result))
@@ -274,6 +281,33 @@ async function ensureNativeHelper(knownToken = "") {
     await setLauncherStatus(`launcher unavailable: ${readableError(error)}`, "warn");
     return null;
   }
+}
+
+async function launchHelper(message = {}) {
+  const token = normalizeToken(message.helperToken || "");
+  if (!token) {
+    await setStatus("missing helper token");
+    await setLauncherStatus("missing helper token", "warn");
+    return { ok: false, reason: "missing helper token" };
+  }
+
+  await chrome.storage.local.set({
+    enabled: true,
+    helperToken: token,
+    lastStatus: "launch requested",
+    lastStatusAt: new Date().toISOString()
+  });
+  await ensurePollAlarm();
+
+  const nativeResult = await ensureNativeHelper(token);
+  if (!nativeResult) {
+    await setStatus("launch failed");
+    return { ok: false, reason: "native launcher unavailable" };
+  }
+
+  await setStatus("launch complete");
+  void pollHelper();
+  return { ok: true, nativeResult };
 }
 
 function connectNativeHost() {

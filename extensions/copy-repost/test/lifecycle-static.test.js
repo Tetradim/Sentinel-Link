@@ -14,6 +14,8 @@ test("background wires native host startup and shutdown commands", async () => {
 
   assert.match(background, /com\.tetradim\.discord_copy_repost/);
   assert.match(background, /connectNative/);
+  assert.match(background, /launch-helper/);
+  assert.match(background, /launchHelper/);
   assert.match(background, /shutdown-all/);
   assert.match(background, /open-dedicated-post-window/);
   assert.match(background, /closeManagedDestinationSurfaces/);
@@ -22,11 +24,19 @@ test("background wires native host startup and shutdown commands", async () => {
 test("popup exposes shutdown and dedicated post window controls", async () => {
   const popup = await readFile("extensions/copy-repost/src/popup.html", "utf8");
 
+  assert.match(popup, /id="launch-helper"/);
   assert.match(popup, /id="shutdown-all"/);
   assert.match(popup, /id="dedicated-post-window-enabled"/);
   assert.match(popup, /id="dedicated-post-window-minimized"/);
   assert.match(popup, /id="close-post-windows-on-shutdown"/);
   assert.match(popup, /id="open-dedicated-post-window"/);
+});
+
+test("popup wires launch helper button", async () => {
+  const popup = await readFile("extensions/copy-repost/src/popup.js", "utf8");
+
+  assert.match(popup, /launchHelperButton\.addEventListener\("click", launchHelper\)/);
+  assert.match(popup, /chrome\.runtime\.sendMessage\(\{\s*type: "launch-helper"/);
 });
 
 test("popup auto-saves dedicated window checkbox changes", async () => {
