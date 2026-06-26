@@ -36,7 +36,9 @@ test("popup wires launch helper button", async () => {
   const popup = await readFile("extensions/copy-repost/src/popup.js", "utf8");
 
   assert.match(popup, /launchHelperButton\.addEventListener\("click", launchHelper\)/);
-  assert.match(popup, /chrome\.runtime\.sendMessage\(\{\s*type: "launch-helper"/);
+  assert.match(popup, /sendRuntimeMessage\(\{\s*type: "launch-helper"/);
+  assert.match(popup, /launch failed/);
+  assert.match(popup, /runtime message timed out/);
 });
 
 test("popup auto-saves dedicated window checkbox changes", async () => {

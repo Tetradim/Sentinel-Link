@@ -29,6 +29,8 @@ Install the Chrome native messaging host when you want extension startup/shutdow
 
 Reload the unpacked extension after installing the native host. With native lifecycle installed, extension startup starts or adopts the helper. The popup **Launch** button manually starts or adopts the helper and restores polling if Chrome startup did not wake the service worker. The popup **Shutdown** button stops parsing, closes managed post surfaces when enabled, stops the helper, and stops the watchdog.
 
+The installer registers a compiled native launcher executable with Chrome Native Messaging. If launch fails, the popup status changes from `launch requested` to the specific native-message timeout or startup error.
+
 ## Load The Extension
 
 1. Open `chrome://extensions`.

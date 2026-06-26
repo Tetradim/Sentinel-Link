@@ -386,7 +386,7 @@ Install the native host registration for the current unpacked extension ID:
 .\scripts\install-copy-repost-native-host.ps1 -ExtensionId bfnjhgnbompdhdakmfohoahoohalkhpi
 ```
 
-The installer writes a local wrapper under `apps/native-host/bin/`, writes the Chrome native host manifest under `apps/native-host/native-messaging/`, and registers:
+The installer compiles a local native launcher executable under `apps/native-host/bin/`, writes the Chrome native host manifest under `apps/native-host/native-messaging/`, and registers:
 
 ```text
 HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tetradim.discord_copy_repost
@@ -401,6 +401,7 @@ Native lifecycle behavior:
 - If a managed helper is already listening on port `17654`, the native host adopts it.
 - The native host starts a watchdog that kills the helper if the native host disappears unexpectedly.
 - The popup **Launch** button manually starts or adopts the helper, re-enables the copier, and restores polling when Chrome startup does not wake the helper automatically.
+- Launch failures and native-message timeouts are written back into the popup status area instead of leaving the UI stuck at `launch requested`.
 - The popup **Shutdown** button disables the copier, clears polling, optionally closes managed destination windows/tabs, stops the helper, and stops the watchdog.
 - If Chrome closes and the native pipe disconnects, the native host waits through a grace period before stopping the helper. This avoids killing the helper during transient MV3 service-worker restarts.
 

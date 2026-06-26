@@ -262,7 +262,7 @@ async function ensurePollAlarm() {
   });
 }
 
-async function ensureNativeHelper(knownToken = "") {
+async function ensureNativeHelper(knownToken = "", options = {}) {
   const { enabled = true, helperToken = knownToken || "" } = await chrome.storage.local.get(["enabled", "helperToken"]);
   const token = normalizeToken(knownToken || helperToken);
   if (!enabled || !token) {
@@ -271,10 +271,13 @@ async function ensureNativeHelper(knownToken = "") {
 
   try {
     nativeShutdownRequested = false;
+    const helperTimeoutMs = Number.isFinite(options.helperTimeoutMs) ? options.helperTimeoutMs : 30_000;
+    const nativeTimeoutMs = Number.isFinite(options.nativeTimeoutMs) ? options.nativeTimeoutMs : 45_000;
     const result = await nativeRequest("ensure-helper", {
       helperToken: token,
-      port: 17654
-    });
+      port: 17654,
+      timeoutMs: helperTimeoutMs
+    }, nativeTimeoutMs);
     await setLauncherStatus(result?.started ? "helper started" : result?.adopted ? "helper adopted" : "helper running", "ok");
     return result;
   } catch (error) {
@@ -299,7 +302,10 @@ async function launchHelper(message = {}) {
   });
   await ensurePollAlarm();
 
-  const nativeResult = await ensureNativeHelper(token);
+  const nativeResult = await ensureNativeHelper(token, {
+    helperTimeoutMs: 30_000,
+    nativeTimeoutMs: 45_000
+  });
   if (!nativeResult) {
     await setStatus("launch failed");
     return { ok: false, reason: "native launcher unavailable" };

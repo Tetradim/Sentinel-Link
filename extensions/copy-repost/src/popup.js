@@ -123,10 +123,10 @@ async function launchHelper() {
     });
     maxMessageAgeMinutesInput.value = maxMessageAgeMinutes;
 
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessage({
       type: "launch-helper",
       helperToken
-    });
+    }, 50_000);
     setMessage(
       lifecycleMessage,
       response?.ok ? "Launch complete" : response?.reason || "Launch failed",
@@ -134,10 +134,43 @@ async function launchHelper() {
     );
     await loadState();
   } catch (error) {
-    setMessage(lifecycleMessage, readableError(error), "error");
+    const message = `launch failed: ${readableError(error)}`;
+    await chrome.storage.local.set({
+      lastStatus: message,
+      lastStatusAt: new Date().toISOString()
+    });
+    renderLastStatus({
+      lastStatus: message,
+      lastStatusAt: new Date().toISOString()
+    });
+    setMessage(lifecycleMessage, message, "error");
   } finally {
     launchHelperButton.disabled = false;
   }
+}
+
+function sendRuntimeMessage(message, timeoutMs = 15_000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      settled = true;
+      reject(new Error(`runtime message timed out: ${message?.type || "unknown"}`));
+    }, timeoutMs);
+
+    chrome.runtime.sendMessage(message, (response) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        reject(new Error(lastError.message));
+        return;
+      }
+      resolve(response);
+    });
+  });
 }
 
 async function saveLifecycleSettings() {
