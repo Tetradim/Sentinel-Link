@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { evaluatePayloadFreshness } from "@extension-external/shared";
+import { evaluatePayloadFreshness } from "@sentinel-link/shared";
 
 const maxJsonBodyBytes = 1024 * 1024;
 const allowedDiscordOrigins = new Set([

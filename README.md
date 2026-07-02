@@ -1,4 +1,4 @@
-# Extension External
+# Sentinel Link
 
 Chrome-extension and localhost-helper toolkit for authorized Discord alert testing.
 
@@ -38,7 +38,7 @@ Discord web source tab
   -> apps/external-helper /jobs/:id/result
 ```
 
-The trading bridge extension uses the same helper event endpoint:
+The Sentinel Link Trading Bridge uses the same helper event endpoint:
 
 ```text
 Trading bridge parser
@@ -507,7 +507,7 @@ If Discord still reports `Discord tab did not finish loading` or `Discord compos
 - Copy/repost content script: watches visible Discord message DOM nodes in loaded Discord channel tabs.
 - Copy/repost background worker: watches helper jobs through `chrome.alarms` polling and extension messages from content scripts.
 - Copy/repost popup: watches local extension storage and helper `/health` when refreshed/saved.
-- Trading bridge helper client: does not monitor by itself; it submits alerts when the trading bridge extension calls it.
+- Trading bridge helper client: does not monitor by itself; it submits alerts when the Sentinel Link Trading Bridge calls it.
 
 ## Troubleshooting
 

@@ -1,5 +1,5 @@
 (function runDiscordCopyRepostContentScript() {
-  const contentScriptVersion = "0.1.8";
+  const contentScriptVersion = "0.1.10";
   if (window.__discordCopyRepostContentVersion === contentScriptVersion) {
     return;
   }
@@ -89,33 +89,39 @@
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          inspectAddedNode(node);
-        }
+        inspectMutation(mutation);
       }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
-  function inspectAddedNode(node) {
-    if (!isElement(node)) {
+  function inspectMutation(mutation) {
+    if (mutation?.type === "characterData") {
+      inspectAddedNode(mutation.target);
       return;
     }
 
+    for (const node of mutation?.addedNodes || []) {
+      inspectAddedNode(node);
+    }
+  }
+
+  function inspectAddedNode(node) {
     messageNodesForAddedNode(node).forEach(inspectMessageNode);
   }
 
   function messageNodesForAddedNode(node) {
-    if (!isElement(node)) {
+    if (!node) {
       return [];
     }
 
     const nodes = [];
-    if (node.matches?.(messageSelector)) {
-      nodes.push(node);
+    const element = asElement(node);
+    if (element?.matches?.(messageSelector)) {
+      nodes.push(element);
     }
 
-    node.querySelectorAll?.(messageSelector).forEach((messageNode) => {
+    element?.querySelectorAll?.(messageSelector).forEach((messageNode) => {
       nodes.push(messageNode);
     });
 
@@ -128,12 +134,12 @@
   }
 
   function closestMessageNode(node) {
-    let current = node.parentElement;
+    let current = asElement(node) || parentElement(node);
     while (current) {
       if (current.matches?.(messageSelector)) {
         return current;
       }
-      current = current.parentElement;
+      current = parentElement(current);
     }
     return null;
   }
@@ -589,6 +595,15 @@
 
   function isElement(node) {
     return node && node.nodeType === Node.ELEMENT_NODE;
+  }
+
+  function asElement(node) {
+    return isElement(node) ? node : null;
+  }
+
+  function parentElement(node) {
+    const parent = node?.parentElement || node?.parentNode || null;
+    return isElement(parent) ? parent : null;
   }
 
   function isVisible(element) {

@@ -1,10 +1,10 @@
-# Discord Extension Helper Implementation Plan
+# Sentinel Link Helper Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a monorepo with a local helper app, a Discord copy/repost Chrome extension, and a trading bridge integration area for authorized alert testing through the visible Discord web UI.
 
-**Architecture:** The helper app owns durable configuration, queueing, dedupe, retry state, and logs through a localhost HTTP API. The copy/repost extension extracts visible Discord alert data from configured source tabs, asks the helper for destination jobs, and posts through the visible Discord composer. The trading bridge area exposes the same helper client contract so the currently installed trading bridge extension can be adapted without coupling it to the copy/repost extension internals.
+**Architecture:** The helper app owns durable configuration, queueing, dedupe, retry state, and logs through a localhost HTTP API. The copy/repost extension extracts visible Discord alert data from configured source tabs, asks the helper for destination jobs, and posts through the visible Discord composer. The trading bridge area exposes the same helper client contract so the currently installed Sentinel Link Trading Bridge can be adapted without coupling it to the copy/repost extension internals.
 
 **Tech Stack:** Node.js 20+ ESM, built-in `node:test`, built-in `http`, JSON files for durable local state, Chrome Manifest V3, vanilla JavaScript content scripts, localhost HTTP polling.
 
@@ -54,7 +54,7 @@ Create or modify these files across the three branches:
 - `extensions/copy-repost/test/parser.test.js`: parser unit tests with fake DOM nodes.
 - `extensions/copy-repost/README.md`: loading, config, and manual test instructions.
 - `extensions/trading-bridge/README.md`: trading bridge import and adapter instructions.
-- `extensions/trading-bridge/helper-client.js`: reusable helper API client for the installed trading bridge extension.
+- `extensions/trading-bridge/helper-client.js`: reusable helper API client for the installed Sentinel Link Trading Bridge.
 
 ## Shared Helper Protocol
 
@@ -97,7 +97,7 @@ Create `package.json` with:
 
 ```json
 {
-  "name": "extension-external",
+  "name": "sentinel-link",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -136,7 +136,7 @@ Create `packages/shared/package.json` with:
 
 ```json
 {
-  "name": "@extension-external/shared",
+  "name": "@sentinel-link/shared",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.js",
@@ -465,12 +465,12 @@ Create `apps/external-helper/package.json` with:
 
 ```json
 {
-  "name": "@extension-external/helper",
+  "name": "@sentinel-link/helper",
   "version": "0.1.0",
   "type": "module",
   "private": true,
   "dependencies": {
-    "@extension-external/shared": "file:../../packages/shared"
+    "@sentinel-link/shared": "file:../../packages/shared"
   }
 }
 ```
@@ -651,7 +651,7 @@ Create `apps/external-helper/src/config.js` with:
 
 ```javascript
 import { readFile } from "node:fs/promises";
-import { validateConfig } from "@extension-external/shared";
+import { validateConfig } from "@sentinel-link/shared";
 
 export async function loadConfigFromFile(configPath) {
   const raw = await readFile(configPath, "utf8");
@@ -666,7 +666,7 @@ Create `apps/external-helper/src/store.js` with:
 ```javascript
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { createDedupeKey, formatRepostMessage, validateAlertPayload } from "@extension-external/shared";
+import { createDedupeKey, formatRepostMessage, validateAlertPayload } from "@sentinel-link/shared";
 import { nextRetryDelayMs } from "./retry.js";
 
 export async function createJsonStore(filePath) {
@@ -1012,7 +1012,7 @@ const store = await createJsonStore(statePath);
 const server = createServer({ config, store });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`Discord extension helper listening on http://127.0.0.1:${port}`);
+  console.log(`Sentinel Link Helper listening on http://127.0.0.1:${port}`);
   console.log(`Config: ${configPath}`);
   console.log(`State: ${statePath}`);
 });
@@ -1024,7 +1024,7 @@ Modify `apps/external-helper/package.json` to:
 
 ```json
 {
-  "name": "@extension-external/helper",
+  "name": "@sentinel-link/helper",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -1032,7 +1032,7 @@ Modify `apps/external-helper/package.json` to:
     "start": "node src/main.js"
   },
   "dependencies": {
-    "@extension-external/shared": "file:../../packages/shared"
+    "@sentinel-link/shared": "file:../../packages/shared"
   }
 }
 ```
@@ -1731,7 +1731,7 @@ Create `extensions/trading-bridge/helper-client.js` with:
 Create `extensions/trading-bridge/README.md` with:
 
 ````markdown
-# Trading Bridge Extension
+# Sentinel Link Trading Bridge
 
 This directory is for the trading bridge Chrome extension currently installed on the trading bots.
 
@@ -1800,7 +1800,7 @@ Expected: merge completes with no conflicts.
 Create `README.md` with:
 
 ````markdown
-# Extension External
+# Sentinel Link
 
 Toolkit for authorized Discord alert testing with Chrome extensions and a local helper app.
 
@@ -1808,7 +1808,7 @@ Toolkit for authorized Discord alert testing with Chrome extensions and a local 
 
 - `apps/external-helper`: localhost helper that owns config, queueing, dedupe, retries, and logs.
 - `extensions/copy-repost`: Chrome extension that watches visible Discord channels and recreates alerts in configured destination channels.
-- `extensions/trading-bridge`: integration area for the trading bridge extension currently installed on the trading bots.
+- `extensions/trading-bridge`: integration area for the Sentinel Link Trading Bridge currently installed on the trading bots.
 - `packages/shared`: shared schemas and formatting helpers.
 
 ## Start Helper
@@ -1861,7 +1861,7 @@ npm run helper:start
 Expected console output:
 
 ```text
-Discord extension helper listening on http://127.0.0.1:17654
+Sentinel Link Helper listening on http://127.0.0.1:17654
 ```
 
 In a second terminal, run:

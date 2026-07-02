@@ -1,5 +1,5 @@
 {
-  "name": "extension-external",
+  "name": "sentinel-link",
   "private": true,
   "type": "module",
   "workspaces": [

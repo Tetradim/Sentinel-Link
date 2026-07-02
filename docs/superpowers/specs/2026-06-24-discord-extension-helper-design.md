@@ -1,4 +1,4 @@
-# Discord Extension And Helper Design
+# Sentinel Link Extension And Helper Design
 
 ## Goal
 
@@ -25,7 +25,7 @@ Each branch should land a complete, independently reviewable vertical slice, the
 
 The system has three cooperating parts:
 
-1. Trading bridge extension
+1. Sentinel Link Trading Bridge
    - Imported or adapted into `extensions/trading-bridge/`.
    - Emits normalized channel/message events to the helper when possible.
    - Keeps its original bot-helper behavior intact unless a compatibility change is needed.

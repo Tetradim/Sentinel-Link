@@ -29,11 +29,13 @@
       source.guildId && source.channelId
         ? `https://discord.com/channels/${source.guildId}/${source.channelId}`
         : pageUrl;
-    const author = firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']);
+    const author =
+      firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']) ||
+      previousMessageAuthor(messageNode);
     const timestampNode = firstNode(messageNode, ["time"]);
     const timestampText = timestampNode && isVisible(timestampNode) ? normalizedText(timestampNode) : "";
     const timestampIso = timestampIsoFromNode(timestampNode);
-    const text = firstVisibleText(messageNode, ['[class*="markup"]']);
+    const text = visibleTexts(messageNode, ['[class*="markup"]']).join("\n");
     const attachmentUrls = uniqueStrings(queryAll(messageNode, ["a[href]"]).map(getHref).filter(isDiscordAttachmentUrl));
     const embeds = extractEmbeds(messageNode);
 
@@ -227,8 +229,10 @@
   function looksLikeMessageContext(node) {
     const role = getAttribute(node, "role").toLowerCase();
     const className = getClassName(node).toLowerCase();
+    const id = getNodeProperty(node, "id") || getAttribute(node, "id");
     return Boolean(
-      getAttribute(node, "data-list-item-id") ||
+      String(id || "").startsWith("chat-messages-") ||
+        getAttribute(node, "data-list-item-id") ||
         role === "listitem" ||
         className.includes("message") ||
         className.includes("group")
@@ -286,6 +290,49 @@
       }
     }
     return "";
+  }
+
+  function previousMessageAuthor(messageNode) {
+    let current = messageNode;
+    let depth = 0;
+    while (current && depth < 6) {
+      let sibling = previousElementSibling(current);
+      let checked = 0;
+      while (sibling && checked < 12) {
+        if (looksLikeMessageContext(sibling) || hasMessageContextDescendant(sibling)) {
+          const author = lastVisibleText(sibling, ['[class*="username"]', '[class*="headerText"]']);
+          if (author) {
+            return author;
+          }
+          checked += 1;
+        }
+        sibling = previousElementSibling(sibling);
+      }
+      current = getParentNode(current);
+      depth += 1;
+    }
+    return "";
+  }
+
+  function hasMessageContextDescendant(node) {
+    return queryAll(node, ['[id^="chat-messages-"]', '[data-list-item-id]', '[role="listitem"]']).some(
+      looksLikeMessageContext
+    );
+  }
+
+  function lastVisibleText(root, selectors) {
+    const texts = visibleTexts(root, selectors);
+    return texts.length ? texts[texts.length - 1] : "";
+  }
+
+  function previousElementSibling(node) {
+    if (node?.previousElementSibling) {
+      return node.previousElementSibling;
+    }
+    const parent = getParentNode(node);
+    const children = Array.from(parent?.children || []);
+    const index = children.indexOf(node);
+    return index > 0 ? children[index - 1] : null;
   }
 
   function firstNode(root, selectors) {

@@ -1,5 +1,5 @@
 {
-  "name": "@extension-external/helper",
+  "name": "@sentinel-link/helper",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -7,6 +7,6 @@
     "start": "node src/main.js"
   },
   "dependencies": {
-    "@extension-external/shared": "file:../../packages/shared"
+    "@sentinel-link/shared": "file:../../packages/shared"
   }
 }

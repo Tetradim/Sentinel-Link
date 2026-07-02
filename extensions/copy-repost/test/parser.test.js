@@ -66,9 +66,19 @@ function createElement({ tagName = "div", id = "", className = "", text = "", at
   return node;
 }
 
+function linkSiblings(parent) {
+  const children = parent.children || [];
+  for (let index = 0; index < children.length; index += 1) {
+    children[index].previousElementSibling = children[index - 1] || null;
+    children[index].nextElementSibling = children[index + 1] || null;
+  }
+  return parent;
+}
+
 function appendChild(parent, child) {
   parent.children.push(child);
   child.parentElement = parent;
+  linkSiblings(parent);
   return child;
 }
 
@@ -187,6 +197,87 @@ test("extractAlertFromMessageNode captures visible Discord message content", asy
   assert.deepEqual(fromSandbox(alert.labels), []);
   assert.deepEqual(fromSandbox(alert.attachmentUrls), ["https://cdn.discordapp.com/file.png"]);
   assert.match(alert.capturedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test("extractAlertFromMessageNode preserves multi-segment alert body text", async () => {
+  const parser = await loadParser();
+  const messageNode = createElement({
+    id: messageNodeId,
+    children: [
+      createElement({ className: "username", text: "MikeInvesting" }),
+      createElement({ className: "markup", text: "$.42 HERE ON SPY CALLS\nUP +30%" }),
+      createElement({ className: "markup", text: "PT of $.7+ stands the same\nIt just may take longer" })
+    ]
+  });
+
+  const alert = parser.extractAlertFromMessageNode(messageNode, sourceUrl);
+
+  assert.equal(
+    alert.text,
+    "$.42 HERE ON SPY CALLS UP +30%\nPT of $.7+ stands the same It just may take longer"
+  );
+});
+
+test("extractAlertFromMessageNode inherits author for grouped continuation messages", async () => {
+  const parser = await loadParser();
+  const firstMessage = createElement({
+    id: `chat-messages-${sourceChannelId}-111111111111111111`,
+    attrs: { role: "listitem" },
+    children: [
+      createElement({ className: "username", text: "MikeInvesting" }),
+      createElement({ className: "markup", text: "$.42 HERE ON SPY CALLS" })
+    ]
+  });
+  const continuation = createElement({
+    id: messageNodeId,
+    attrs: { role: "listitem" },
+    children: [
+      createElement({
+        tagName: "time",
+        text: "[ 9:17 AM ]",
+        attrs: { datetime: "2026-07-01T14:17:00.000Z" }
+      }),
+      createElement({ className: "markup", text: "After the recent squeeze such backtests should've been expected." })
+    ]
+  });
+  linkSiblings(createElement({ children: [firstMessage, continuation] }));
+
+  const alert = parser.extractAlertFromMessageNode(continuation, sourceUrl);
+
+  assert.equal(alert.author, "MikeInvesting");
+  assert.equal(alert.timestampText, "[ 9:17 AM ]");
+  assert.equal(alert.text, "After the recent squeeze such backtests should've been expected.");
+});
+
+test("extractAlertFromMessageNode inherits author across wrapped grouped message rows", async () => {
+  const parser = await loadParser();
+  const firstMessage = createElement({
+    id: `chat-messages-${sourceChannelId}-111111111111111111`,
+    attrs: { role: "listitem" },
+    children: [
+      createElement({ className: "username", text: "MikeInvesting" }),
+      createElement({ className: "markup", text: "$.49 HERE ON MSFT CALLS" })
+    ]
+  });
+  const continuation = createElement({
+    id: messageNodeId,
+    attrs: { role: "listitem" },
+    children: [
+      createElement({
+        tagName: "time",
+        text: "[ 9:42 AM ]",
+        attrs: { datetime: "2026-07-01T14:42:46.334Z" }
+      }),
+      createElement({ className: "markup", text: "SOLD MAJORITY" })
+    ]
+  });
+  const firstRow = createElement({ className: "messageListItem", children: [firstMessage] });
+  const continuationRow = createElement({ className: "messageListItem", children: [continuation] });
+  linkSiblings(createElement({ children: [firstRow, continuationRow] }));
+
+  const alert = parser.extractAlertFromMessageNode(continuation, sourceUrl);
+
+  assert.equal(alert.author, "MikeInvesting");
 });
 
 test("extractAlertFromMessageNode handles absent selectors without throwing", async () => {

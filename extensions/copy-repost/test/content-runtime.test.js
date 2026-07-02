@@ -170,7 +170,7 @@ test("content runtime exposes a version for background reinjection checks", asyn
   const { document } = createDocument();
   const { runtime } = await loadContentRuntime(document);
 
-  assert.equal(runtime.contentScriptVersion, "0.1.8");
+  assert.equal(runtime.contentScriptVersion, "0.1.10");
 });
 
 test("content runtime keys the same visible source message independently of Discord id churn", async () => {
@@ -309,6 +309,23 @@ test("messageNodesForAddedNode includes nearest message ancestor for grouped Dis
   const { runtime } = await loadContentRuntime(document);
 
   const nodes = runtime.messageNodesForAddedNode(groupedChild);
+
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].id, groupedMessage.id);
+});
+
+test("messageNodesForAddedNode includes nearest message ancestor for added text nodes", async () => {
+  const groupedTextNode = {
+    nodeType: 3,
+    textContent: "Definitely solid."
+  };
+  const groupedMessage = createMessage("chat-messages-222-444", "");
+  groupedTextNode.parentElement = groupedMessage;
+  groupedTextNode.parentNode = groupedMessage;
+  const { document } = createDocument({ messages: [groupedMessage] });
+  const { runtime } = await loadContentRuntime(document);
+
+  const nodes = runtime.messageNodesForAddedNode(groupedTextNode);
 
   assert.equal(nodes.length, 1);
   assert.equal(nodes[0].id, groupedMessage.id);

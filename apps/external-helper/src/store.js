@@ -7,7 +7,7 @@ import {
   formatRepostMessage,
   validateAlertPayload,
   validateConfig
-} from "@extension-external/shared";
+} from "@sentinel-link/shared";
 import { nextRetryDelayMs } from "./retry.js";
 
 const emptyState = () => ({ jobs: [], events: [], seen: {} });

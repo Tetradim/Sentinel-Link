@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { validateConfig } from "@extension-external/shared";
+import { validateConfig } from "@sentinel-link/shared";
 
 export async function loadConfigFromFile(configPath) {
   const raw = await readFile(configPath, "utf8");
