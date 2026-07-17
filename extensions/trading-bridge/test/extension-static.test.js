@@ -25,4 +25,6 @@ test("trading bridge is a loadable Chrome extension", async () => {
   assert.match(content, /discord-bridge:discord-message/);
   assert.match(popup, /targetsJson/);
   assert.match(popup, /autoRestartEnabled/);
+  assert.match(popup, /General API/);
+  assert.match(serviceWorker, /publishGeneralApiObservation/);
 });

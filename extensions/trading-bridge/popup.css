@@ -30,6 +30,7 @@ label {
 
 input[type="url"],
 input[type="password"],
+input[type="text"],
 textarea {
   width: 100%;
   box-sizing: border-box;
@@ -38,6 +39,12 @@ textarea {
   padding: 8px;
   font: inherit;
 }
+
+h2 { margin: 0; font-size: 15px; }
+.general-api-section { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid #cbd5e1; }
+.help { margin: 0; color: #64748b; font-size: 12px; }
+.button-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+#generalApiStatus { min-height: 18px; margin: 0; color: #475569; }
 
 textarea {
   min-height: 190px;

@@ -9,6 +9,12 @@ const DEFAULTS = {
   forwardExistingOnEnable: false,
   autoRestartEnabled: true,
   bridgeRestartAttempt: 0,
+  generalApiEnabled: false,
+  generalApiBaseUrl: "http://127.0.0.1:9200/api/general",
+  generalApiRunId: "",
+  generalApiParticipantId: "sentinel-link",
+  generalApiToken: "",
+  generalApiSymbols: [],
 };
 
 const HEARTBEAT_ALARM_NAME = "sentinel-echo-bridge-heartbeat";
@@ -293,13 +299,20 @@ async function forwardObservedMessage(payload) {
   }
 
   const targets = targetsForPayload(settings, payload);
+  const generalApiResult = await publishGeneralApiObservation(settings, payload).catch(async (error) => {
+    await chrome.storage.local.set({
+      lastGeneralApiStatus: errorMessage(error),
+      lastGeneralApiAt: new Date().toISOString(),
+    });
+    return { status: "failed", error: errorMessage(error) };
+  });
   if (targets.length === 0) {
     await chrome.storage.local.set({
       lastForwardStatus: "no_matching_target",
       lastForwardAt: new Date().toISOString(),
       lastForwardEventId: payload.event_id,
     });
-    return { status: "skipped", skip_reason: "no matching bridge target" };
+    return { status: "skipped", skip_reason: "no matching bridge target", general_api: generalApiResult };
   }
 
   try {
@@ -313,11 +326,38 @@ async function forwardObservedMessage(payload) {
     if (result.failures.length > 0) {
       await scheduleRestartRetry(`message forward partially failed: ${result.failures[0].error}`);
     }
-    return result;
+    return { ...result, general_api: generalApiResult };
   } catch (error) {
     await scheduleRestartRetry(`message forward failed: ${errorMessage(error)}`);
     throw error;
   }
+}
+
+async function publishGeneralApiObservation(settings, payload) {
+  if (!settings.generalApiEnabled) return { status: "disabled" };
+  if (!settings.generalApiRunId || !settings.generalApiParticipantId || !settings.generalApiToken) {
+    throw new Error("General API requires a run ID, participant ID, and registered token");
+  }
+  const baseUrl = String(settings.generalApiBaseUrl || "http://127.0.0.1:9200/api/general").replace(/\/+$/, "");
+  const endpoint = `${baseUrl}/runs/${encodeURIComponent(settings.generalApiRunId)}/participants/${encodeURIComponent(settings.generalApiParticipantId)}/observations`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Archive-Bot-Token": settings.generalApiToken,
+    },
+    body: JSON.stringify({
+      event_type: "discord_alert_observed",
+      symbol: payload.symbol || payload.ticker || null,
+      decision: "observed",
+      reason: "Sentinel Link observed and forwarded a visible Discord alert.",
+      metadata: { discord_alert: payload },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || `General API returned HTTP ${response.status}`);
+  await chrome.storage.local.set({ lastGeneralApiStatus: "accepted", lastGeneralApiAt: new Date().toISOString() });
+  return { status: "accepted", event: body };
 }
 
 async function forwardPayloadToTargets(targets, payload, kind) {

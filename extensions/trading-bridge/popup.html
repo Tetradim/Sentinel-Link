@@ -45,6 +45,23 @@
 
       <button id="save" type="button">Save</button>
       <p id="status"></p>
+
+      <section class="general-api-section">
+        <h2>General API</h2>
+        <p class="help">Archive replays and brokers. Sentinel Link only records observed Discord alerts; it never creates trades.</p>
+        <label class="toggle"><input id="generalApiEnabled" type="checkbox" /><span>Publish observations to Archive</span></label>
+        <label>Archive base URL<input id="generalApiBaseUrl" type="url" /></label>
+        <label>Replay run ID<input id="generalApiRunId" type="text" /></label>
+        <label>Participant ID<input id="generalApiParticipantId" type="text" /></label>
+        <label>Observed symbols<input id="generalApiSymbols" type="text" placeholder="SPY, TSLA" /></label>
+        <label>Participant token<input id="generalApiToken" type="password" autocomplete="off" placeholder="Saved locally after registration" /></label>
+        <div class="button-row">
+          <button id="saveGeneralApi" type="button">Save</button>
+          <button id="testGeneralApi" type="button">Test</button>
+          <button id="registerGeneralApi" type="button">Register</button>
+        </div>
+        <p id="generalApiStatus"></p>
+      </section>
     </main>
     <script src="bridge_config.js"></script>
     <script src="popup.js"></script>

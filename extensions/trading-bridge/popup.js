@@ -15,6 +15,14 @@ const DEFAULTS = {
   lastHeartbeatTargets: [],
   lastRestartStatus: "",
   nextRestartAt: "",
+  generalApiEnabled: false,
+  generalApiBaseUrl: "http://127.0.0.1:9200/api/general",
+  generalApiRunId: "",
+  generalApiParticipantId: "sentinel-link",
+  generalApiToken: "",
+  generalApiSymbols: [],
+  lastGeneralApiStatus: "",
+  lastGeneralApiAt: "",
 };
 
 const enabled = document.getElementById("enabled");
@@ -25,6 +33,13 @@ const heartbeatUrl = document.getElementById("heartbeatUrl");
 const apiKey = document.getElementById("apiKey");
 const targetsJson = document.getElementById("targetsJson");
 const status = document.getElementById("status");
+const generalApiEnabled = document.getElementById("generalApiEnabled");
+const generalApiBaseUrl = document.getElementById("generalApiBaseUrl");
+const generalApiRunId = document.getElementById("generalApiRunId");
+const generalApiParticipantId = document.getElementById("generalApiParticipantId");
+const generalApiSymbols = document.getElementById("generalApiSymbols");
+const generalApiToken = document.getElementById("generalApiToken");
+const generalApiStatus = document.getElementById("generalApiStatus");
 
 chrome.storage.local.get(DEFAULTS, (settings) => {
   const targets = normalizeBridgeTargets(settings);
@@ -37,6 +52,15 @@ chrome.storage.local.get(DEFAULTS, (settings) => {
   apiKey.value = firstTarget.apiKey || "";
   targetsJson.value = JSON.stringify(targets, null, 2);
   renderStatus(settings);
+  generalApiEnabled.checked = Boolean(settings.generalApiEnabled);
+  generalApiBaseUrl.value = settings.generalApiBaseUrl || DEFAULTS.generalApiBaseUrl;
+  generalApiRunId.value = settings.generalApiRunId || "";
+  generalApiParticipantId.value = settings.generalApiParticipantId || "sentinel-link";
+  generalApiSymbols.value = (settings.generalApiSymbols || []).join(", ");
+  generalApiToken.value = settings.generalApiToken || "";
+  generalApiStatus.textContent = settings.lastGeneralApiStatus
+    ? `Last: ${settings.lastGeneralApiStatus}${settings.lastGeneralApiAt ? ` at ${new Date(settings.lastGeneralApiAt).toLocaleTimeString()}` : ""}`
+    : "Not connected.";
 });
 
 document.getElementById("save").addEventListener("click", () => {
@@ -93,6 +117,77 @@ autoRestartEnabled.addEventListener("change", () => {
     status.textContent = autoRestartEnabled.checked ? "Auto-restart enabled." : "Auto-restart disabled.";
   });
 });
+
+function generalApiSettings() {
+  return {
+    generalApiEnabled: generalApiEnabled.checked,
+    generalApiBaseUrl: generalApiBaseUrl.value.trim().replace(/\/+$/, "") || DEFAULTS.generalApiBaseUrl,
+    generalApiRunId: generalApiRunId.value.trim(),
+    generalApiParticipantId: generalApiParticipantId.value.trim() || "sentinel-link",
+    generalApiToken: generalApiToken.value.trim(),
+    generalApiSymbols: generalApiSymbols.value.split(",").map((value) => value.trim().toUpperCase()).filter(Boolean),
+  };
+}
+
+document.getElementById("saveGeneralApi").addEventListener("click", () => {
+  chrome.storage.local.set(generalApiSettings(), () => {
+    generalApiStatus.textContent = "General API settings saved.";
+  });
+});
+
+document.getElementById("testGeneralApi").addEventListener("click", async () => {
+  try {
+    const settings = generalApiSettings();
+    await chrome.storage.local.set(settings);
+    const spec = await generalApiRequest(settings, "GET", "spec");
+    let authenticated = false;
+    if (settings.generalApiRunId && settings.generalApiToken) {
+      await generalApiRequest(settings, "GET", `runs/${encodeURIComponent(settings.generalApiRunId)}/participants/${encodeURIComponent(settings.generalApiParticipantId)}/account`, undefined, true);
+      authenticated = true;
+    }
+    generalApiStatus.textContent = `Connected: ${spec.contract_version || "archive.general.v1"}; authenticated: ${authenticated ? "yes" : "no"}.`;
+  } catch (error) {
+    generalApiStatus.textContent = `General API test failed: ${error.message}`;
+  }
+});
+
+document.getElementById("registerGeneralApi").addEventListener("click", async () => {
+  try {
+    const settings = generalApiSettings();
+    if (!settings.generalApiRunId) throw new Error("Replay run ID is required");
+    const registration = await generalApiRequest(settings, "POST", `runs/${encodeURIComponent(settings.generalApiRunId)}/participants`, {
+      participant_id: settings.generalApiParticipantId,
+      bot_id: "sentinel-link",
+      display_name: "Sentinel Link",
+      roles: ["observer"],
+      subscribed_symbols: settings.generalApiSymbols,
+      starting_cash: 100000,
+      commission_per_order: 0,
+      slippage_bps: 0,
+    });
+    generalApiToken.value = registration.api_token || "";
+    await chrome.storage.local.set({ ...settings, generalApiEnabled: true, generalApiToken: registration.api_token || "" });
+    generalApiEnabled.checked = true;
+    generalApiStatus.textContent = "Sentinel Link registered; participant token saved locally.";
+  } catch (error) {
+    generalApiStatus.textContent = `Registration failed: ${error.message}`;
+  }
+});
+
+async function generalApiRequest(settings, method, endpoint, body, authenticated = false) {
+  const response = await fetch(`${settings.generalApiBaseUrl}/${endpoint.replace(/^\/+/, "")}`, {
+    method,
+    headers: {
+      Accept: "application/json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(authenticated ? { "X-Archive-Bot-Token": settings.generalApiToken } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+  return payload;
+}
 
 function renderStatus(settings) {
   if (!settings.lastForwardAt) {
