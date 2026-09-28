@@ -6,8 +6,88 @@ import vm from "node:vm";
 
 const contentPath = path.resolve("extensions/copy-repost/src/content.js");
 
-async function loadContentRuntime(document) {
+test("listen-only sources are bridge eligible without becoming repost sources", async () => {
+  const { runtime } = await loadContentRuntime(createDocument().document);
+  const settings = { listenChannelUrls: ["https://discord.com/channels/111/333"], listenOnlyChannelUrls: ["https://discord.com/channels/111/222"] };
+  assert.equal(runtime.isBridgeListenSource(settings, "https://discord.com/channels/111/222", "222"), true);
+  assert.equal(runtime.isBridgeListenSource(settings, "https://discord.com/channels/111/333", "333"), true);
+  assert.equal(runtime.isBridgeListenSource(settings, "https://discord.com/channels/111/444", "444"), false);
+  assert.equal(runtime.isBridgeListenSource({ listenOnlyChannelUrls: settings.listenOnlyChannelUrls }, "https://discord.com/channels/111/444", "444"), false);
+  assert.equal(runtime.sourceModeForBridge(settings, "https://discord.com/channels/111/222", "222"), "listen-only");
+  assert.equal(runtime.sourceModeForBridge(settings, "https://discord.com/channels/111/333", "333"), "listen");
+  assert.equal(runtime.sourceModeForBridge(settings, "https://discord.com/channels/111/444", "444"), "");
+});
+
+test("bridge preserves embed fields and footer and identifies the source message", async () => {
+  const { runtime } = await loadContentRuntime(createDocument().document);
+  const payload = runtime.chromeBridgePayload({ sourceUrl: "https://discord.com/channels/111/222", messageId: "999", sourceChannelId: "222", embeds: [{ title: "NVDA $230 Calls", fields: [{ name: "Exp", value: "Sep 03, 2026" }], footer: "Not Financial Advice" }] }, "listen-only");
+  assert.equal(payload.embeds[0].footer_text, "Not Financial Advice");
+  assert.equal(payload.embeds[0].fields[0].value, "Sep 03, 2026");
+  assert.equal(payload.url, "https://discord.com/channels/111/222/999");
+  assert.equal(payload.source, "sentinel-link");
+  assert.equal(payload.source_mode, "listen-only");
+});
+
+test("bridge forwards stable message revision metadata", async () => {
+  const { runtime } = await loadContentRuntime(createDocument().document);
+  const payload = runtime.chromeBridgePayload({
+    sourceUrl: "https://discord.com/channels/111/222",
+    sourceChannelId: "222",
+    messageId: "999",
+    author: "MikeInvesting",
+    authorRaw: "MikeInvesting(WILL NOT DM FIRST)",
+    text: "IN AT $.26",
+    revisionHash: "abc123",
+    eventType: "updated"
+  });
+
+  assert.equal(payload.event_id, "999");
+  assert.equal(payload.revision_hash, "abc123");
+  assert.equal(payload.event_type, "updated");
+  assert.equal(payload.author_raw, "MikeInvesting(WILL NOT DM FIRST)");
+});
+
+test("local OCR enriches image-only alerts with measured confidence", async () => {
+  let bitmapClosed = false;
+  const { runtime } = await loadContentRuntime(createDocument().document, {
+    TextDetector: class {
+      async detect() {
+        return [{ rawValue: "BTO SPY 500C 9/12 @ .25", confidence: 0.92 }];
+      }
+    },
+    createImageBitmap: async () => ({ close() { bitmapClosed = true; } }),
+    fetch: async () => ({ ok: true, blob: async () => ({}) })
+  });
+
+  const enriched = await runtime.enrichPayloadWithLocalOcr(null, {
+    text: "",
+    embeds: [],
+    attachmentUrls: ["https://cdn.discordapp.com/alert.png"]
+  });
+
+  assert.equal(enriched.ocrText, "BTO SPY 500C 9/12 @ .25");
+  assert.equal(enriched.ocrConfidence, 0.92);
+  assert.equal(bitmapClosed, true);
+});
+
+test("local OCR gives unmeasured text a high score only for a complete option entry", async () => {
+  const detect = async () => [{ rawValue: "$SPY 500C ENTRY @ .25" }];
+  const { runtime } = await loadContentRuntime(createDocument().document, {
+    TextDetector: class { async detect() { return detect(); } },
+    createImageBitmap: async () => ({ close() {} }),
+    fetch: async () => ({ ok: true, blob: async () => ({}) })
+  });
+
+  const enriched = await runtime.enrichPayloadWithLocalOcr(null, {
+    text: "", embeds: [], attachmentUrls: ["https://cdn.discordapp.com/alert.png"]
+  });
+
+  assert.equal(enriched.ocrConfidence, 0.85);
+});
+
+async function loadContentRuntime(document, runtimeGlobals = {}) {
   const source = await readFile(contentPath, "utf8");
+  const { window: runtimeWindow = {}, ...otherRuntimeGlobals } = runtimeGlobals;
   const selection = {
     selectedNode: null,
     removeAllRanges() {
@@ -34,7 +114,8 @@ async function loadContentRuntime(document) {
       setTimeout(callback) {
         callback();
         return 0;
-      }
+      },
+      ...runtimeWindow
     },
     document,
     location: {
@@ -47,10 +128,12 @@ async function loadContentRuntime(document) {
     Node: { ELEMENT_NODE: 1 },
     MutationObserver: class {
       observe() {}
-    }
+    },
+    ...otherRuntimeGlobals
   };
   sandbox.globalThis = sandbox;
 
+  vm.runInNewContext(await readFile(path.resolve("extensions/copy-repost/src/trading-bridge-config.js"), "utf8"), sandbox);
   vm.runInNewContext(source, sandbox, { filename: contentPath });
 
   return {
@@ -170,7 +253,17 @@ test("content runtime exposes a version for background reinjection checks", asyn
   const { document } = createDocument();
   const { runtime } = await loadContentRuntime(document);
 
-  assert.equal(runtime.contentScriptVersion, "0.1.10");
+  assert.equal(runtime.contentScriptVersion, "0.1.16");
+});
+
+test("content runtime reinitializes after an extension restart leaves a stale page marker", async () => {
+  const { document } = createDocument();
+  const { runtime } = await loadContentRuntime(document, {
+    window: { __discordCopyRepostContentVersion: "0.1.13" }
+  });
+
+  assert.ok(runtime);
+  assert.equal(runtime.contentScriptVersion, "0.1.16");
 });
 
 test("content runtime keys the same visible source message independently of Discord id churn", async () => {

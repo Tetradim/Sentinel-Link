@@ -16,6 +16,30 @@
     return selected;
   }
 
+  function chooseWorkspaceUrls({
+    listenChannelUrls = [],
+    listenOnlyChannelUrls = [],
+    postChannelUrls = [],
+    fallbackUrl = ""
+  } = {}) {
+    const urls = [
+      ...normalizeUrlList(listenChannelUrls),
+      ...normalizeUrlList(listenOnlyChannelUrls),
+      ...normalizeUrlList(postChannelUrls)
+    ];
+    const fallback = normalizeDiscordChannelUrl(fallbackUrl)?.url || "";
+    const uniqueUrls = [];
+    for (const url of [...urls, fallback]) {
+      if (url && !uniqueUrls.includes(url)) {
+        uniqueUrls.push(url);
+      }
+    }
+    if (uniqueUrls.length === 0) {
+      throw new Error("No Discord channel URL is configured");
+    }
+    return uniqueUrls;
+  }
+
   function normalizeDedicatedWindowState(input = {}) {
     return {
       dedicatedPostWindowEnabled: input.dedicatedPostWindowEnabled === true,
@@ -57,6 +81,18 @@
     }
   }
 
+  function findDiscordChannelTab(tabs, destinationUrl) {
+    const destination = normalizeDiscordChannelUrl(destinationUrl);
+    if (!destination || !Array.isArray(tabs)) {
+      return null;
+    }
+
+    return tabs.find((tab) => [tab?.url, tab?.pendingUrl].some((value) => {
+      const candidate = normalizeDiscordChannelUrl(value || "");
+      return candidate?.url === destination.url;
+    })) || null;
+  }
+
   function normalizeTabIds(values) {
     if (!Array.isArray(values)) {
       return [];
@@ -72,6 +108,8 @@
   globalThis.CopyRepostDestinationWindow = {
     keys,
     choosePostWindowUrl,
+    chooseWorkspaceUrls,
+    findDiscordChannelTab,
     normalizeDedicatedWindowState,
     normalizeDiscordChannelUrl,
     normalizeUrlList

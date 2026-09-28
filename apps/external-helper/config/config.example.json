@@ -1,5 +1,7 @@
 {
   "enabled": true,
+  "deliveryClientId": "sentinel-link-extension-0.2.4",
+  "deliveryExtensionId": "ddpgdbgihdmkfcnchbffjkihakdopdbl",
   "retry": {
     "maxAttempts": 3,
     "baseDelayMs": 2000

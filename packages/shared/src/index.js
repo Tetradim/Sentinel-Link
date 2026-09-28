@@ -30,15 +30,38 @@ export function validateConfig(input) {
     throw new Error("mappings must be an array");
   }
   const mappings = Object.hasOwn(input, "mappings") ? input.mappings : [];
+  const deliveryClientId = Object.hasOwn(input, "deliveryClientId")
+    ? requireNonEmptyString(input.deliveryClientId, "deliveryClientId")
+    : "";
+  const deliveryExtensionId = Object.hasOwn(input, "deliveryExtensionId")
+    ? requireExtensionId(input.deliveryExtensionId)
+    : "";
   const sendPacingMs = integerInRange(input, "sendPacingMs", 1500, 250, 60000, "sendPacingMs");
   const freshness = validateFreshness(Object.hasOwn(input, "freshness") ? input.freshness : {});
   return {
     enabled: input.enabled !== false,
+    deliveryClientId,
+    deliveryExtensionId,
     retry: { maxAttempts, baseDelayMs },
     freshness,
     sendPacingMs,
     mappings: mappings.map((mapping, index) => validateMapping(mapping, index))
   };
+}
+
+function requireNonEmptyString(value, label) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function requireExtensionId(value) {
+  const extensionId = requireNonEmptyString(value, "deliveryExtensionId").toLowerCase();
+  if (!/^[a-p]{32}$/.test(extensionId)) {
+    throw new Error("deliveryExtensionId must be a Chrome extension id");
+  }
+  return extensionId;
 }
 
 function validateFreshness(input) {
@@ -118,8 +141,13 @@ export function validateAlertPayload(input) {
     throw new Error("Alert payload must include visible content");
   }
   const author = typeof input.author === "string" ? input.author.trim() : "";
+  const authorRaw = typeof input.authorRaw === "string" ? input.authorRaw.trim() : author;
   const timestampText = typeof input.timestampText === "string" ? input.timestampText.trim() : "";
   const timestampIso = normalizeTimestampIso(input.timestampIso);
+  const ocrText = typeof input.ocrText === "string" ? input.ocrText.trim() : "";
+  const ocrConfidence = Number.isFinite(Number(input.ocrConfidence))
+    ? Math.min(1, Math.max(0, Number(input.ocrConfidence)))
+    : null;
   const messageId =
     typeof input.messageId === "string" && input.messageId.trim()
       ? input.messageId.trim()
@@ -132,19 +160,40 @@ export function validateAlertPayload(input) {
           embeds,
           attachmentUrls
         });
-  return {
+  const payload = {
     sourceUrl: source.url,
     sourceChannelId: source.channelId,
     messageId,
     author,
+    authorRaw,
     timestampText,
     timestampIso,
     text,
     embeds,
     labels,
     attachmentUrls,
-    capturedAt: typeof input.capturedAt === "string" ? input.capturedAt : new Date().toISOString()
+    ocrText,
+    ocrConfidence,
+    capturedAt: typeof input.capturedAt === "string" ? input.capturedAt : new Date().toISOString(),
+    eventType: input.eventType === "updated" ? "updated" : "created"
   };
+  payload.revisionHash = normalizeRevisionHash(input.revisionHash) || createRevisionHash(payload);
+  return payload;
+}
+
+function normalizeRevisionHash(value) {
+  return typeof value === "string" && /^[a-f0-9]+$/i.test(value.trim()) ? value.trim().toLowerCase() : "";
+}
+
+export function createRevisionHash(payload) {
+  return hashString(JSON.stringify({
+    author: normalizeVisibleText(payload?.author),
+    timestampIso: normalizeTimestampIso(payload?.timestampIso),
+    text: normalizeVisibleText(payload?.text),
+    embeds: Array.isArray(payload?.embeds) ? payload.embeds : [],
+    attachmentUrls: Array.isArray(payload?.attachmentUrls) ? payload.attachmentUrls : [],
+    ocrText: normalizeVisibleText(payload?.ocrText)
+  }));
 }
 
 function validateEmbed(embed) {

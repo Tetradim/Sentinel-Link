@@ -1,9 +1,10 @@
 (function exposeSourceRouting(global) {
-  function buildSourceConfig({ helperConfig = {}, runtimeMappings = [] } = {}) {
+  function buildSourceConfig({ helperConfig = {}, runtimeMappings = [], listenOnlyChannelUrls = [] } = {}) {
     const validRuntimeMappings = Array.isArray(runtimeMappings)
       ? runtimeMappings.filter((mapping) => mapping && mapping.enabled !== false)
       : [];
     return {
+      listenOnlyChannelUrls,
       helperSources: extractEnabledSources(helperConfig),
       popupSources: extractEnabledSources({
         enabled: true,
@@ -14,6 +15,13 @@
   }
 
   function selectSubmissionForPayload(payload, sourceConfig = {}) {
+    if (isListenOnlyPayload(payload, sourceConfig.listenOnlyChannelUrls)) {
+      return {
+        allowed: true,
+        mode: "listen-only",
+        body: { alert: payload, captureOnly: true, mappings: [] }
+      };
+    }
     if (matchesSources(payload, sourceConfig.popupSources) && sourceConfig.runtimeMappings?.length) {
       return {
         allowed: true,
@@ -38,6 +46,16 @@
       mode: "ignored",
       body: null
     };
+  }
+
+  function isListenOnlyPayload(payload, urls = []) {
+    const sources = extractEnabledSources({
+      mappings: (Array.isArray(urls) ? urls : []).map(sourceUrl => ({ sourceUrl }))
+    });
+    return matchesSources({
+      sourceChannelId: payload?.sourceChannelId || payload?.channel_id,
+      sourceUrl: payload?.sourceUrl || payload?.channel_url || payload?.url
+    }, sources);
   }
 
   function extractEnabledSources(config) {
@@ -104,7 +122,7 @@
 
   global.CopyRepostSourceRouting = {
     buildSourceConfig,
+    isListenOnlyPayload,
     selectSubmissionForPayload
   };
 })(globalThis);
-

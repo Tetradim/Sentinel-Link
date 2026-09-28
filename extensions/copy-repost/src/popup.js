@@ -1,8 +1,27 @@
 const helperBaseUrl = "http://127.0.0.1:17654";
 const listenStorageKey = "listenChannelUrls";
+const listenOnlyStorageKey = "listenOnlyChannelUrls";
 const postStorageKey = "postChannelUrls";
 const maxMessageAgeMinutesStorageKey = "maxMessageAgeMinutes";
 const launcherStatusStorageKey = "launcherStatus";
+const bridgeDefaults = {
+  enabled: true,
+  targetUrl: DEFAULT_MESSAGE_URL,
+  heartbeatUrl: DEFAULT_HEARTBEAT_URL,
+  apiKey: "",
+  targets: [],
+  forwardExistingOnEnable: false,
+  autoRestartEnabled: true,
+  lastForwardStatus: "",
+  lastForwardAt: "",
+  lastForwardEventId: "",
+  lastForwardTargets: [],
+  lastHeartbeatStatus: "",
+  lastHeartbeatAt: "",
+  lastHeartbeatTargets: [],
+  lastRestartStatus: "",
+  nextRestartAt: ""
+};
 const routes = globalThis.CopyRepostChannelRoutes;
 const freshness = globalThis.CopyRepostFreshness;
 const destinationWindow = globalThis.CopyRepostDestinationWindow;
@@ -19,6 +38,14 @@ const dedicatedPostWindowMinimizedInput = document.querySelector("#dedicated-pos
 const closePostWindowsOnShutdownInput = document.querySelector("#close-post-windows-on-shutdown");
 const openDedicatedPostWindowButton = document.querySelector("#open-dedicated-post-window");
 const lifecycleMessage = document.querySelector("#lifecycle-message");
+const bridgeForwardExistingInput = document.querySelector("#bridge-forward-existing");
+const bridgeAutoRestartInput = document.querySelector("#bridge-auto-restart");
+const bridgeTargetUrlInput = document.querySelector("#bridge-target-url");
+const bridgeHeartbeatUrlInput = document.querySelector("#bridge-heartbeat-url");
+const bridgeApiKeyInput = document.querySelector("#bridge-api-key");
+const bridgeShowApiKeyInput = document.querySelector("#bridge-show-api-key");
+const bridgeTargetsJsonInput = document.querySelector("#bridge-targets-json");
+const bridgeStatus = document.querySelector("#bridge-status");
 const listenUrlInput = document.querySelector("#listen-url");
 const listenLockButton = document.querySelector("#listen-lock");
 const listenRevertButton = document.querySelector("#listen-revert");
@@ -26,6 +53,10 @@ const listenRevertAllButton = document.querySelector("#listen-revert-all");
 const listenMessage = document.querySelector("#listen-message");
 const listenSummary = document.querySelector("#listen-summary");
 const listenStoredUrlsSelect = document.querySelector("#listen-stored-urls");
+const listenOnlyUrlInput = document.querySelector("#listen-only-url");
+const listenOnlyMessage = document.querySelector("#listen-only-message");
+const listenOnlySummary = document.querySelector("#listen-only-summary");
+const listenOnlyStoredUrlsSelect = document.querySelector("#listen-only-stored-urls");
 const postUrlInput = document.querySelector("#post-url");
 const postLockButton = document.querySelector("#post-lock");
 const postRevertButton = document.querySelector("#post-revert");
@@ -49,6 +80,9 @@ closePostWindowsOnShutdownInput.addEventListener("change", saveLifecycleSettings
 listenLockButton.addEventListener("click", lockListenUrl);
 listenRevertButton.addEventListener("click", revertListenUrl);
 listenRevertAllButton.addEventListener("click", revertAllListenUrls);
+document.querySelector("#listen-only-lock").addEventListener("click", () => updateListenOnlyUrls("lock"));
+document.querySelector("#listen-only-revert").addEventListener("click", () => updateListenOnlyUrls("revert"));
+document.querySelector("#listen-only-revert-all").addEventListener("click", () => updateListenOnlyUrls("clear"));
 postLockButton.addEventListener("click", lockPostUrl);
 postRevertButton.addEventListener("click", revertPostUrl);
 postUrlInput.addEventListener("input", () => {
@@ -56,6 +90,9 @@ postUrlInput.addEventListener("input", () => {
 });
 showTokenInput.addEventListener("change", () => {
   tokenInput.type = showTokenInput.checked ? "text" : "password";
+});
+bridgeShowApiKeyInput.addEventListener("change", () => {
+  bridgeApiKeyInput.type = bridgeShowApiKeyInput.checked ? "text" : "password";
 });
 
 void loadState();
@@ -71,10 +108,24 @@ async function loadState() {
     "launcherStatusAt",
     maxMessageAgeMinutesStorageKey,
     listenStorageKey,
+    listenOnlyStorageKey,
     postStorageKey,
     destinationWindowKeys.dedicatedPostWindowEnabled,
     destinationWindowKeys.dedicatedPostWindowMinimized,
-    destinationWindowKeys.closePostWindowsOnShutdown
+    destinationWindowKeys.closePostWindowsOnShutdown,
+    "targetUrl",
+    "heartbeatUrl",
+    "apiKey",
+    "targets",
+    "forwardExistingOnEnable",
+    "autoRestartEnabled",
+    "lastForwardStatus",
+    "lastForwardAt",
+    "lastForwardTargets",
+    "lastHeartbeatStatus",
+    "lastHeartbeatAt",
+    "lastRestartStatus",
+    "nextRestartAt"
   ]);
   enabledInput.checked = state.enabled !== false;
   tokenInput.value = typeof state.helperToken === "string" ? state.helperToken : "";
@@ -82,6 +133,7 @@ async function loadState() {
     state[maxMessageAgeMinutesStorageKey]
   );
   renderLifecycleState(state);
+  renderBridgeState(state);
   renderChannelState(state);
   renderLauncherStatus(state);
   renderLastStatus(state);
@@ -91,15 +143,25 @@ async function loadState() {
 async function saveSettings() {
   const helperToken = tokenInput.value.trim();
   const maxMessageAgeMinutes = freshness.normalizeFreshnessWindowMinutes(maxMessageAgeMinutesInput.value);
+  let bridgeSettings;
+  try {
+    bridgeSettings = currentBridgeSettings();
+  } catch (error) {
+    setMessage(bridgeStatus, readableError(error), "error");
+    return;
+  }
   await chrome.storage.local.set({
     enabled: enabledInput.checked,
     helperToken,
     maxMessageAgeMinutes,
     ...currentLifecycleSettings(),
+    ...bridgeSettings,
     lastStatus: "settings saved",
     lastStatusAt: new Date().toISOString()
   });
   maxMessageAgeMinutesInput.value = maxMessageAgeMinutes;
+  bridgeTargetsJsonInput.value = JSON.stringify(bridgeSettings.targets, null, 2);
+  setMessage(bridgeStatus, bridgeSettings.apiKey ? "Echo bridge settings saved" : "Echo bridge saved; API key is empty", bridgeSettings.apiKey ? "ok" : "warn");
   renderLastStatus({
     lastStatus: "settings saved",
     lastStatusAt: new Date().toISOString()
@@ -118,6 +180,7 @@ async function launchHelper() {
       helperToken,
       maxMessageAgeMinutes,
       ...currentLifecycleSettings(),
+      ...currentBridgeSettings(),
       lastStatus: "launch requested",
       lastStatusAt: new Date().toISOString()
     });
@@ -213,7 +276,9 @@ async function openDedicatedPostWindow() {
     });
     setMessage(
       lifecycleMessage,
-      response?.ok ? `Opened ${shortUrl(response.url)}` : response?.reason || "Open failed",
+      response?.ok
+        ? `Opened ${(response.urls || [response.url]).filter(Boolean).length} channel tab(s)`
+        : response?.reason || "Open failed",
       response?.ok ? "ok" : "error"
     );
     await loadState();
@@ -268,6 +333,32 @@ async function revertAllListenUrls() {
   setMessage(listenMessage, "Cleared listen URLs", "warn");
 }
 
+async function updateListenOnlyUrls(action) {
+  try {
+    const state = await chrome.storage.local.get(listenOnlyStorageKey);
+    const current = routes.normalizeUrlList(state[listenOnlyStorageKey]);
+    let result;
+    if (action === "lock") {
+      result = routes.addChannelUrl(current, listenOnlyUrlInput.value);
+    } else if (action === "revert") {
+      result = routes.revertLastChannelUrl(current);
+    } else {
+      result = { urls: routes.clearChannelUrls() };
+    }
+    await chrome.storage.local.set({
+      [listenOnlyStorageKey]: result.urls,
+      lastStatus: `listen-only channels ${action === "lock" ? "locked" : action === "revert" ? "reverted" : "cleared"}`,
+      lastStatusAt: new Date().toISOString()
+    });
+    listenOnlyUrlInput.value = result.removedUrl || "";
+    await renderStoredChannels();
+    setMessage(listenOnlyMessage, action === "lock" ? `Locked ${shortUrl(result.addedUrl)} (Echo bridge, no repost)`
+      : result.removedUrl ? `Removed ${shortUrl(result.removedUrl)}` : "No listen-only URLs stored", "ok");
+  } catch (error) {
+    setMessage(listenOnlyMessage, readableError(error), "error");
+  }
+}
+
 async function lockPostUrl() {
   try {
     const state = await chrome.storage.local.get(postStorageKey);
@@ -307,17 +398,20 @@ async function revertPostUrl() {
 }
 
 async function renderStoredChannels() {
-  const state = await chrome.storage.local.get([listenStorageKey, postStorageKey, "lastStatus", "lastStatusAt"]);
+  const state = await chrome.storage.local.get([listenStorageKey, listenOnlyStorageKey, postStorageKey, "lastStatus", "lastStatusAt"]);
   renderChannelState(state);
   renderLastStatus(state);
 }
 
 function renderChannelState(state) {
   const listenUrls = routes.normalizeUrlList(state[listenStorageKey]);
+  const listenOnlyUrls = routes.normalizeUrlList(state[listenOnlyStorageKey]);
   const postUrls = routes.normalizeUrlList(state[postStorageKey]);
   listenSummary.textContent = summarizeUrls(listenUrls, "listen URL");
+  listenOnlySummary.textContent = summarizeUrls(listenOnlyUrls, "listen-only URL");
   postSummary.textContent = summarizeUrls(postUrls, "post URL");
   renderUrlOptions(listenStoredUrlsSelect, routes.toStoredUrlOptions(listenUrls, "No listen URLs locked"));
+  renderUrlOptions(listenOnlyStoredUrlsSelect, routes.toStoredUrlOptions(listenOnlyUrls, "No listen-only URLs locked"));
   renderUrlOptions(postStoredUrlsSelect, routes.toStoredUrlOptions(postUrls, "No post URLs locked"));
   if (!postUrlInput.value && postUrls.length > 0) {
     postUrlInput.value = postUrls.at(-1);
@@ -330,6 +424,69 @@ function renderLifecycleState(state) {
   dedicatedPostWindowEnabledInput.checked = normalized.dedicatedPostWindowEnabled;
   dedicatedPostWindowMinimizedInput.checked = normalized.dedicatedPostWindowMinimized;
   closePostWindowsOnShutdownInput.checked = normalized.closePostWindowsOnShutdown;
+}
+
+function renderBridgeState(state) {
+  const settings = { ...bridgeDefaults, ...state };
+  const targets = normalizeBridgeTargets(settings);
+  const firstTarget = targets[0] || normalizeBridgeTargets(bridgeDefaults)[0];
+  bridgeForwardExistingInput.checked = Boolean(settings.forwardExistingOnEnable);
+  bridgeAutoRestartInput.checked = settings.autoRestartEnabled !== false;
+  bridgeTargetUrlInput.value = firstTarget?.messageUrl || DEFAULT_MESSAGE_URL;
+  bridgeHeartbeatUrlInput.value = firstTarget?.heartbeatUrl || heartbeatUrlFor(firstTarget?.messageUrl || DEFAULT_MESSAGE_URL);
+  bridgeApiKeyInput.value = firstTarget?.apiKey || "";
+  bridgeTargetsJsonInput.value = JSON.stringify(targets, null, 2);
+  renderBridgeStatus(settings);
+}
+
+function currentBridgeSettings() {
+  let parsedTargets = [];
+  const rawTargets = bridgeTargetsJsonInput.value.trim();
+  if (rawTargets) {
+    try {
+      parsedTargets = JSON.parse(rawTargets);
+    } catch (error) {
+      throw new Error(`Bot targets JSON is invalid: ${error.message}`);
+    }
+    if (!Array.isArray(parsedTargets)) {
+      throw new Error("Bot targets JSON must be an array");
+    }
+  }
+
+  const targetUrl = bridgeTargetUrlInput.value.trim() || DEFAULT_MESSAGE_URL;
+  const heartbeatUrl = bridgeHeartbeatUrlInput.value.trim() || heartbeatUrlFor(targetUrl);
+  const targets = normalizeBridgeTargets({ ...bridgeDefaults, targets: parsedTargets });
+  if (targets.length === 0) {
+    targets.push(normalizeBridgeTargets({ targetUrl, heartbeatUrl, apiKey: bridgeApiKeyInput.value.trim() })[0]);
+  }
+
+  targets[0] = {
+    ...targets[0],
+    messageUrl: targetUrl || targets[0].messageUrl,
+    heartbeatUrl: heartbeatUrl || heartbeatUrlFor(targets[0].messageUrl),
+    apiKey: bridgeApiKeyInput.value.trim()
+  };
+
+  return {
+    targetUrl: targets[0].messageUrl,
+    heartbeatUrl: targets[0].heartbeatUrl || heartbeatUrlFor(targets[0].messageUrl),
+    apiKey: targets[0].apiKey || "",
+    targets,
+    forwardExistingOnEnable: bridgeForwardExistingInput.checked,
+    autoRestartEnabled: bridgeAutoRestartInput.checked
+  };
+}
+
+function renderBridgeStatus(settings) {
+  const heartbeat = settings.lastHeartbeatAt
+    ? `heartbeat ${settings.lastHeartbeatStatus || "unknown"} ${formatTimestamp(settings.lastHeartbeatAt)}`
+    : "no heartbeat yet";
+  const forward = settings.lastForwardAt
+    ? `last forward ${settings.lastForwardStatus || "unknown"} ${formatTimestamp(settings.lastForwardAt)}`
+    : "waiting for Discord messages";
+  const retry = settings.nextRestartAt ? `; retry ${formatTimestamp(settings.nextRestartAt)}` : "";
+  const keyState = settings.apiKey ? "" : "; Echo API key empty";
+  setMessage(bridgeStatus, `${forward}; ${heartbeat}${retry}${keyState}`, settings.apiKey ? "" : "warn");
 }
 
 function renderLauncherStatus(state) {

@@ -10,3 +10,13 @@ test("native host installer registers a compiled executable instead of a command
   assert.match(installer, /launcherExePath/);
   assert.doesNotMatch(installer, /"path": "\$\(ConvertTo-JsonEscaped \$wrapperPath\)"/);
 });
+
+test("native host installer allows the currently loaded unpacked extension id", async () => {
+  const installer = await readFile("scripts/install-copy-repost-native-host.ps1", "utf8");
+
+  assert.match(installer, /Find-InstalledCopyRepostExtensionIds/);
+  assert.match(installer, /Secure Preferences/);
+  assert.match(installer, /extensions\\copy-repost/);
+  assert.match(installer, /allowedOriginsJson/);
+  assert.doesNotMatch(installer, /"chrome-extension:\/\/\$ExtensionId\/"/);
+});

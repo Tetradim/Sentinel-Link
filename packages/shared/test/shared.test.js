@@ -56,6 +56,17 @@ test("validateConfig accepts enabled source to multiple destinations mapping", (
   assert.equal(config.mappings[0].destinationUrls.length, 2);
 });
 
+test("validateConfig preserves the exclusive delivery client id", () => {
+  const config = validateConfig({
+    deliveryClientId: "sentinel-link-extension-0.2.4",
+    deliveryExtensionId: "ddpgdbgihdmkfcnchbffjkihakdopdbl",
+    mappings: []
+  });
+
+  assert.equal(config.deliveryClientId, "sentinel-link-extension-0.2.4");
+  assert.equal(config.deliveryExtensionId, "ddpgdbgihdmkfcnchbffjkihakdopdbl");
+});
+
 test("validateConfig rejects malformed provided fields", () => {
   assert.throws(
     () => validateConfig({ retry: "soon", mappings: [] }),
@@ -93,6 +104,26 @@ test("validateAlertPayload requires visible source fields and content", () => {
   assert.equal(payload.text, "Entry alert");
   assert.equal(payload.timestampIso, "2026-06-25T18:59:00.000Z");
   assert.equal(payload.embeds[0].fields[0].name, "Price");
+});
+
+test("validateAlertPayload preserves revision and normalized author metadata", () => {
+  const payload = validateAlertPayload({
+    sourceUrl: "https://discord.com/channels/111/222",
+    messageId: "999",
+    author: "MikeInvesting",
+    authorRaw: "MikeInvesting(WILL NOT DM FIRST) [MIKE]",
+    text: "IN AT $.26",
+    revisionHash: "ABC123",
+    eventType: "updated",
+    ocrText: "BTO SPY 500C 9/12 @ .25",
+    ocrConfidence: 0.91
+  });
+
+  assert.equal(payload.authorRaw, "MikeInvesting(WILL NOT DM FIRST) [MIKE]");
+  assert.equal(payload.revisionHash, "abc123");
+  assert.equal(payload.eventType, "updated");
+  assert.equal(payload.ocrText, "BTO SPY 500C 9/12 @ .25");
+  assert.equal(payload.ocrConfidence, 0.91);
 });
 
 test("validateAlertPayload derives source channel id from the source URL", () => {

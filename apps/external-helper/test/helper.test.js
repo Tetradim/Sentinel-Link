@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFromFile } from "../src/config.js";
@@ -123,6 +123,46 @@ function authHeaders(headers = {}) {
 function isFetchBlockedPort(port) {
   return Number.isInteger(port) && fetchBlockedPorts.has(port);
 }
+
+test("listen-only HTTP capture persists rich payload, deduplicates, and never creates repost jobs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-listen-only-"));
+  let server;
+  try {
+    const file = join(dir, "state.json");
+    const store = await createJsonStore(file);
+    const started = await startHelperHttpServer(store);
+    server = started.server;
+    const payload = { ...samplePayload, embeds: [{ title: "NVDA Calls", description: "Entry $0.85" }] };
+    const submit = () => fetch(`${started.baseUrl}/events`, {
+      method: "POST", headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ alert: payload, captureOnly: true })
+    });
+    const response = await submit();
+    assert.equal(response.status, 202);
+    const result = await response.json();
+    assert.equal(result.capturedOnly, true);
+    assert.deepEqual(result.createdJobs, []);
+    assert.equal((await (await submit()).json()).skippedDuplicate, true);
+    assert.equal(await store.claimNextJob("test-worker"), null);
+    const restored = await createJsonStore(file);
+    const snapshot = await restored.snapshot();
+    assert.equal(snapshot.jobs.length, 0);
+    const captures = snapshot.events.filter(event => event.type === "captured_only");
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0].payload.text, payload.text);
+    assert.equal(captures[0].payload.embeds[0].title, "NVDA Calls");
+    const status = await (await fetch(`${started.baseUrl}/status`, { headers: authHeaders() })).json();
+    assert.equal(status.counts.captured_only, 1);
+    const invalid = await fetch(`${started.baseUrl}/events`, {
+      method: "POST", headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ alert: { ...payload, messageId: "another" }, captureOnly: "true" })
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("nextRetryDelayMs doubles from base delay by retry attempt", () => {
   assert.equal(nextRetryDelayMs(1, 2000), 2000);
@@ -420,6 +460,60 @@ test("HTTP API accepts extension-supplied event mappings", async () => {
   }
 });
 
+test("HTTP API reserves delivery jobs for the configured extension worker", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-delivery-client-"));
+  let server;
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    const config = {
+      ...sampleConfig,
+      deliveryClientId: "sentinel-link-extension-0.2.4",
+      deliveryExtensionId: "ddpgdbgihdmkfcnchbffjkihakdopdbl"
+    };
+    const started = await startHelperHttpServer(store, config);
+    server = started.server;
+
+    const eventResponse = await fetch(`${started.baseUrl}/events`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(samplePayload)
+    });
+    assert.equal(eventResponse.status, 202);
+
+    const staleWorkerResponse = await fetch(
+      `${started.baseUrl}/jobs/next?clientId=copy-repost-extension`,
+      {
+        headers: authHeaders({
+          origin: "chrome-extension://bfnjhgnbompdhdakmfohoahoohalkhpi"
+        })
+      }
+    );
+    assert.equal(staleWorkerResponse.status, 409);
+    assert.equal((await staleWorkerResponse.json()).error.code, "delivery_client_mismatch");
+
+    const cachedCurrentWorkerResponse = await fetch(
+      `${started.baseUrl}/jobs/next?clientId=copy-repost-extension`,
+      {
+        headers: authHeaders({
+          origin: "chrome-extension://ddpgdbgihdmkfcnchbffjkihakdopdbl"
+        })
+      }
+    );
+    assert.equal(cachedCurrentWorkerResponse.status, 200);
+    assert.equal((await cachedCurrentWorkerResponse.json()).destinationUrl, firstDestinationUrl);
+
+    const currentVersionedWorkerResponse = await fetch(
+      `${started.baseUrl}/jobs/next?clientId=sentinel-link-extension-0.2.4`,
+      { headers: authHeaders() }
+    );
+    assert.equal(currentVersionedWorkerResponse.status, 200);
+    assert.equal((await currentVersionedWorkerResponse.json()).destinationUrl, secondDestinationUrl);
+  } finally {
+    await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("HTTP API skips stale events before queueing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "helper-http-stale-event-"));
   let server;
@@ -443,6 +537,96 @@ test("HTTP API skips stale events before queueing", async () => {
     assert.equal(snapshot.jobs.length, 0);
   } finally {
     await closeHelperHttpServer(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("store records a changed message revision without reposting it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-revision-"));
+  try {
+    const store = await createJsonStore(join(dir, "state.json"));
+    const first = await store.enqueueAlert(singleDestinationConfig, {
+      ...samplePayload,
+      revisionHash: "aaa111"
+    });
+    const updated = await store.enqueueAlert(singleDestinationConfig, {
+      ...samplePayload,
+      text: "IN AT $.26 - FILLED",
+      revisionHash: "bbb222",
+      eventType: "updated"
+    });
+    const duplicateUpdate = await store.enqueueAlert(singleDestinationConfig, {
+      ...samplePayload,
+      text: "IN AT $.26 - FILLED",
+      revisionHash: "bbb222",
+      eventType: "updated"
+    });
+    const snapshot = await store.snapshot();
+
+    assert.equal(first.createdJobs.length, 1);
+    assert.equal(updated.updated, true);
+    assert.deepEqual(updated.createdJobs, []);
+    assert.equal(duplicateUpdate.skippedDuplicate, true);
+    assert.equal(snapshot.jobs.length, 1);
+    assert.equal(snapshot.events.filter((event) => event.type === "message_updated").length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("store bounds operational history and archives pruned terminal records", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-retention-"));
+  try {
+    const statePath = join(dir, "state.json");
+    const store = await createJsonStore(statePath, {
+      maxEvents: 4,
+      maxTerminalJobs: 1,
+      maxSeen: 2
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      await store.enqueueAlert(singleDestinationConfig, {
+        ...samplePayload,
+        messageId: `message-${index}`,
+        text: `Entry alert ${index}`
+      });
+      const job = await store.claimNextJob("retention-test");
+      await store.recordJobResult({ jobId: job.id, status: "sent", clientId: "retention-test" });
+    }
+
+    const snapshot = await store.snapshot();
+    assert.equal(snapshot.jobs.length, 1);
+    assert.ok(snapshot.events.length <= 4);
+    assert.ok(Object.keys(snapshot.seen).length <= 2);
+
+    const archiveFiles = await readdir(join(dir, "archive"));
+    assert.ok(archiveFiles.some((name) => name.endsWith(".jsonl")));
+    const archive = await readFile(join(dir, "archive", archiveFiles[0]), "utf8");
+    assert.match(archive, /"recordType":"job"/);
+    assert.match(archive, /"recordType":"event"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("independent helper stores do not collide while replacing the same state file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helper-concurrent-state-"));
+  try {
+    const statePath = join(dir, "state.json");
+    const firstStore = await createJsonStore(statePath);
+    const secondStore = await createJsonStore(statePath);
+
+    const writes = Array.from({ length: 20 }, (_, index) => {
+      const store = index % 2 === 0 ? firstStore : secondStore;
+      return store.captureAlert({
+        ...samplePayload,
+        messageId: `concurrent-${index}`,
+        text: `Concurrent alert ${index}`
+      });
+    });
+
+    await assert.doesNotReject(Promise.all(writes));
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -68,3 +68,74 @@ test("helper controller shutdown kills adopted helper and stops watchdog", async
   assert.equal(result.stopped, true);
   assert.deepEqual(calls, [["watchdog"], ["stop-watchdog"], ["kill", 2222]]);
 });
+
+test("helper controller coalesces concurrent startup requests", async () => {
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  let startCount = 0;
+  let watchdogCount = 0;
+  const controller = createHelperController({
+    port: 17654,
+    helperToken: "test-token",
+    isPortOpen: async () => false,
+    findManagedHelperPidOnPort: async () => null,
+    startHelperProcess: async () => {
+      startCount += 1;
+      await startGate;
+      return { pid: 3333 };
+    },
+    waitForHelper: async () => true,
+    startWatchdog: async () => {
+      watchdogCount += 1;
+    }
+  });
+
+  const first = controller.ensureHelper();
+  const second = controller.ensureHelper();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(startCount, 1);
+  releaseStart();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.deepEqual(secondResult, firstResult);
+  assert.equal(watchdogCount, 1);
+});
+
+test("helper controller shutdown waits for an in-flight startup before killing it", async () => {
+  let releaseStart;
+  let notifyStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  const started = new Promise((resolve) => {
+    notifyStart = resolve;
+  });
+  const calls = [];
+  const controller = createHelperController({
+    port: 17654,
+    helperToken: "test-token",
+    isPortOpen: async () => false,
+    findManagedHelperPidOnPort: async () => null,
+    startHelperProcess: async () => {
+      notifyStart();
+      await startGate;
+      return { pid: 4444 };
+    },
+    waitForHelper: async () => true,
+    startWatchdog: async () => calls.push(["watchdog"]),
+    stopWatchdog: async () => calls.push(["stop-watchdog"]),
+    killProcessTree: async (pid) => calls.push(["kill", pid])
+  });
+
+  const ensure = controller.ensureHelper();
+  await started;
+  const shutdown = controller.shutdown();
+  releaseStart();
+
+  await ensure;
+  const result = await shutdown;
+  assert.equal(result.stopped, true);
+  assert.deepEqual(calls, [["watchdog"], ["stop-watchdog"], ["kill", 4444]]);
+});

@@ -29,21 +29,26 @@
       source.guildId && source.channelId
         ? `https://discord.com/channels/${source.guildId}/${source.channelId}`
         : pageUrl;
-    const author =
+    const directAuthor =
       firstVisibleText(messageNode, ['[class*="username"]', '[class*="headerText"]']) ||
       previousMessageAuthor(messageNode);
-    const timestampNode = firstNode(messageNode, ["time"]);
+    const authorRaw = directAuthor;
+    const author = normalizeAuthor(directAuthor);
+    const timestampNode = firstNode(messageNode, ["time"]) || previousMessageTimestamp(messageNode);
     const timestampText = timestampNode && isVisible(timestampNode) ? normalizedText(timestampNode) : "";
     const timestampIso = timestampIsoFromNode(timestampNode);
-    const text = visibleTexts(messageNode, ['[class*="markup"]']).join("\n");
+    const text = queryAll(messageNode, ['[class*="markup"]'])
+      .filter(node => isVisible(node) && !insideEmbed(node, messageNode))
+      .map(normalizedText).filter(Boolean).join("\n");
     const attachmentUrls = uniqueStrings(queryAll(messageNode, ["a[href]"]).map(getHref).filter(isDiscordAttachmentUrl));
     const embeds = extractEmbeds(messageNode);
 
-    return {
+    const payload = {
       sourceUrl,
       sourceChannelId: source.channelId,
       messageId: extractMessageId(messageNode),
       author,
+      authorRaw,
       timestampText,
       timestampIso,
       text,
@@ -52,6 +57,8 @@
       attachmentUrls,
       capturedAt: new Date().toISOString()
     };
+    payload.revisionHash = revisionHash(payload);
+    return payload;
   }
 
   function extractEmbeds(messageNode) {
@@ -68,7 +75,7 @@
     const fields = fieldRoots.length ? fieldRoots.map(extractField).filter(hasFieldContent) : extractUnwrappedFields(embedNode);
     return {
       title: firstVisibleText(embedNode, ['[class*="embedTitle"]']),
-      description: firstVisibleText(embedNode, ['[class*="embedDescription"]']),
+      description: firstCardText(embedNode, ['[class*="embedDescription"]']),
       fields,
       footer: firstVisibleText(embedNode, ['[class*="embedFooter"]'])
     };
@@ -77,7 +84,7 @@
   function extractField(fieldNode) {
     const field = {
       name: firstVisibleText(fieldNode, ['[class*="embedFieldName"]']),
-      value: firstVisibleText(fieldNode, ['[class*="embedFieldValue"]'])
+      value: firstCardText(fieldNode, ['[class*="embedFieldValue"]'])
     };
     if (hasFieldContent(field)) {
       return field;
@@ -293,6 +300,18 @@
   }
 
   function previousMessageAuthor(messageNode) {
+    const context = previousMessageContext(messageNode);
+    return context ? lastVisibleText(context, ['[class*="username"]', '[class*="headerText"]']) : "";
+  }
+
+  function previousMessageTimestamp(messageNode) {
+    const context = previousMessageContext(messageNode);
+    if (!context) return null;
+    const timestamps = queryAll(context, ["time"]).filter(isVisible);
+    return timestamps.length ? timestamps[timestamps.length - 1] : null;
+  }
+
+  function previousMessageContext(messageNode) {
     let current = messageNode;
     let depth = 0;
     while (current && depth < 6) {
@@ -302,7 +321,7 @@
         if (looksLikeMessageContext(sibling) || hasMessageContextDescendant(sibling)) {
           const author = lastVisibleText(sibling, ['[class*="username"]', '[class*="headerText"]']);
           if (author) {
-            return author;
+            return sibling;
           }
           checked += 1;
         }
@@ -311,7 +330,25 @@
       current = getParentNode(current);
       depth += 1;
     }
-    return "";
+    return null;
+  }
+
+  function normalizeAuthor(value) {
+    return normalizeWhitespace(value)
+      .replace(/\(\s*WILL\s+NOT\s+DM\s+FIRST\s*\)/gi, "")
+      .replace(/\s*\[[^\]]+\](?:\s*,\s*Server Tag:.*)?$/i, "")
+      .replace(/\s*,\s*Server Tag:.*$/i, "")
+      .trim();
+  }
+
+  function revisionHash(payload) {
+    return hashString(JSON.stringify({
+      author: payload.author,
+      timestampIso: payload.timestampIso,
+      text: payload.text,
+      embeds: payload.embeds,
+      attachmentUrls: payload.attachmentUrls
+    }));
   }
 
   function hasMessageContextDescendant(node) {
@@ -404,6 +441,18 @@
 
   function normalizedText(node) {
     return normalizeWhitespace(rawText(node));
+  }
+
+  function insideEmbed(node, messageNode) {
+    for (let current = node; current && current !== messageNode; current = current.parentElement) {
+      if (/\bembed/i.test(getClassName(current))) return true;
+    }
+    return false;
+  }
+
+  function firstCardText(root, selectors) {
+    const node = queryAll(root, selectors).find(isVisible);
+    return rawText(node).split(/\r?\n/).map(normalizeWhitespace).filter(Boolean).join("\n");
   }
 
   function rawText(node) {

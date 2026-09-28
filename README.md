@@ -170,6 +170,20 @@ If the extension relies on `chrome.storage.local` token lookup, its manifest nee
 The easiest runtime setup is now through the Copy/Repost extension popup:
 
 - Add source channels under **Listen**.
+- Add no-repost sources under **Listen Only**. These are retained in the local helper's
+  `captured_only` events with their text, embeds, and visible attachment URLs, but create
+  no Discord repost jobs. They remain eligible for direct Echo API forwarding through
+  enabled bridge targets, subject to each target's channel list and Echo's source settings.
+  Listen Only takes precedence if a source also appears in Listen or helper mappings.
+  No Post URL is required. Lock saves a URL, Revert removes the last one, and Revert All
+  clears only the Listen Only list. Normal Listen/Post configuration is unchanged.
+- Listen-only captures use the existing freshness window and deduplication. They do
+  not replay historical alerts or read text from image pixels. Captured content is
+  available in `apps/external-helper/data/state.json` and recent `/status` events.
+- After updating this feature, restart the helper and reload Sentinel Link in Chrome.
+  Refresh open Discord tabs so they use the updated content script. A separately
+  installed Trading Bridge extension has its own configuration and is not controlled
+  by Sentinel Link's Listen Only list.
 - Add destination channels under **Post**.
 - The extension stores those URLs in `chrome.storage.local`.
 - When a source matches a popup Listen URL, the extension sends that event to the helper with popup runtime mappings.
@@ -447,7 +461,7 @@ The popup lifecycle controls include:
 - **Close post window on shutdown**: closes only managed destination windows/tabs when **Shutdown** is pressed.
 - **Open Post Window**: opens the latest locked Post URL in the managed post window.
 
-The dedicated post window uses the same Chrome profile as the rest of Chrome. It does not require a second Discord login and does not create a second extension instance. The extension creates the managed window normally, then minimizes it when requested; this avoids Chrome rejecting direct minimized-window creation. When dedicated mode is enabled, the extension does not activate destination tabs in the user's main Chrome window.
+The dedicated post window uses the same Chrome profile as the rest of Chrome. It does not require a second Discord login and does not create a second extension instance. The explicit **Open workspace** action creates the managed window normally, then minimizes it when requested; this avoids Chrome rejecting direct minimized-window creation. Automatic repost jobs reuse any matching Discord destination tab across Chrome, including a tab that is still navigating, and never minimize or re-minimize Chrome.
 
 ### Popup Channel Inputs
 

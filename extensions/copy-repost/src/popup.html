@@ -2,12 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Copy Repost Helper</title>
+    <title>Sentinel Link</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <main>
-      <h1>Copy Repost</h1>
+      <h1>Sentinel Link</h1>
 
       <div class="top-actions">
         <button id="launch-helper" type="button">Launch</button>
@@ -52,6 +52,39 @@
         <p id="lifecycle-message" class="message" role="status"></p>
       </section>
 
+      <section class="channel-section" aria-labelledby="bridge-heading">
+        <h2 id="bridge-heading">Echo Bridge</h2>
+        <label class="check-row">
+          <input id="bridge-forward-existing" type="checkbox">
+          <span>Forward already visible messages</span>
+        </label>
+        <label class="check-row">
+          <input id="bridge-auto-restart" type="checkbox">
+          <span>Keep Discord bridge supervised</span>
+        </label>
+        <label class="field">
+          <span>Message URL</span>
+          <input id="bridge-target-url" type="url" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Heartbeat URL</span>
+          <input id="bridge-heartbeat-url" type="url" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Echo API key</span>
+          <input id="bridge-api-key" type="password" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="check-row muted">
+          <input id="bridge-show-api-key" type="checkbox">
+          <span>Show Echo API key</span>
+        </label>
+        <label class="field">
+          <span>Bot targets JSON</span>
+          <textarea id="bridge-targets-json" rows="8" autocomplete="off" spellcheck="false"></textarea>
+        </label>
+        <p id="bridge-status" class="message" role="status"></p>
+      </section>
+
       <section class="channel-section" aria-labelledby="listen-heading">
         <h2 id="listen-heading">Listen</h2>
         <label class="field">
@@ -68,6 +101,25 @@
         <label class="field compact">
           <span>Stored Listen URLs</span>
           <select id="listen-stored-urls" class="route-select"></select>
+        </label>
+      </section>
+
+      <section class="channel-section" aria-labelledby="listen-only-heading">
+        <h2 id="listen-only-heading">Listen Only</h2>
+        <label class="field">
+          <span>Discord channel URL</span>
+          <input id="listen-only-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://discord.com/channels/...">
+        </label>
+        <div class="actions three">
+          <button id="listen-only-lock" type="button">Lock</button>
+          <button id="listen-only-revert" type="button">Revert</button>
+          <button id="listen-only-revert-all" type="button">Revert All</button>
+        </div>
+        <p id="listen-only-message" class="message" role="status"></p>
+        <p id="listen-only-summary" class="summary"></p>
+        <label class="field compact">
+          <span>Stored Listen Only URLs</span>
+          <select id="listen-only-stored-urls" class="route-select"></select>
         </label>
       </section>
 
@@ -106,6 +158,7 @@
     <script src="channel-routes.js"></script>
     <script src="freshness.js"></script>
     <script src="destination-window.js"></script>
+    <script src="trading-bridge-config.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

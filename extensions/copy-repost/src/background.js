@@ -1,17 +1,33 @@
-importScripts("channel-routes.js", "freshness.js", "destination-window.js", "source-routing.js");
+importScripts("channel-routes.js", "freshness.js", "destination-window.js", "source-routing.js", "trading-bridge-config.js");
 
 const helperBaseUrl = "http://127.0.0.1:17654";
-const clientId = "copy-repost-extension";
+const clientId = "sentinel-link-extension-0.2.4";
 const nativeHostName = "com.tetradim.discord_copy_repost";
 const pollAlarmName = "copy-repost-poll";
 const pollAlarmPeriodMinutes = 1;
 const configCacheTtlMs = 60_000;
 const discordTabLoadTimeoutMs = 90_000;
-const contentScriptVersion = "0.1.10";
+const contentScriptVersion = "0.1.16";
 const listenStorageKey = "listenChannelUrls";
+const listenOnlyStorageKey = "listenOnlyChannelUrls";
 const postStorageKey = "postChannelUrls";
 const maxMessageAgeMinutesStorageKey = "maxMessageAgeMinutes";
 const launcherStatusStorageKey = "launcherStatus";
+const tradingBridgeHeartbeatAlarmName = "sentinel-link-trading-bridge-heartbeat";
+const tradingBridgeSupervisorAlarmName = "sentinel-link-trading-bridge-supervisor";
+const tradingBridgeRestartRetryAlarmName = "sentinel-link-trading-bridge-restart-retry";
+const tradingBridgeFetchTimeoutMs = 5000;
+const tradingBridgeDiscordTabUrls = ["https://discord.com/*", "https://*.discord.com/*"];
+const tradingBridgeDefaults = {
+  enabled: true,
+  targetUrl: DEFAULT_MESSAGE_URL,
+  heartbeatUrl: DEFAULT_HEARTBEAT_URL,
+  apiKey: "",
+  targets: [],
+  forwardExistingOnEnable: false,
+  autoRestartEnabled: true,
+  bridgeRestartAttempt: 0
+};
 const routeHelpers = globalThis.CopyRepostChannelRoutes;
 const freshnessHelpers = globalThis.CopyRepostFreshness;
 const destinationWindowHelpers = globalThis.CopyRepostDestinationWindow;
@@ -23,15 +39,22 @@ let sourceConfigCache = null;
 let nativePort = null;
 let nativeRequestId = 0;
 let nativeShutdownRequested = false;
+let nativeHelperEnsurePromise = null;
 const pendingNativeRequests = new Map();
+const contentScriptEnsurePromises = new Map();
+const destinationTabOpenPromises = new Map();
 
 void ensurePollAlarm();
+void ensureTradingBridgeAlarms();
 
 chrome.runtime.onInstalled.addListener(() => {
   (async () => {
     await initializeStorageDefaults();
     await ensureNativeHelper();
     await ensurePollAlarm();
+    await ensureTradingBridgeAlarms();
+    void publishTradingBridgeHeartbeat("ok", { reason: "installed" });
+    void superviseTradingBridgeTabs("installed");
     void pollHelper();
   })();
 });
@@ -40,6 +63,9 @@ chrome.runtime.onStartup.addListener(() => {
   (async () => {
     await ensureNativeHelper();
     await ensurePollAlarm();
+    await ensureTradingBridgeAlarms();
+    void publishTradingBridgeHeartbeat("ok", { reason: "startup" });
+    void superviseTradingBridgeTabs("startup");
     void pollHelper();
   })();
 });
@@ -54,6 +80,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
       })
       .catch((error) => sendResponse({ ok: false, reason: readableError(error) }));
+    return true;
+  }
+
+  if (message?.type === "trading-bridge:discord-message") {
+    forwardTradingBridgeMessage(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: readableError(error) }));
+    return true;
+  }
+
+  if (message?.type === "trading-bridge:bridge-heartbeat") {
+    forwardTradingBridgeHeartbeat(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: readableError(error) }));
     return true;
   }
 
@@ -84,6 +124,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === pollAlarmName) {
     void pollHelper();
+    return;
+  }
+
+  if (alarm.name === tradingBridgeHeartbeatAlarmName) {
+    void publishTradingBridgeHeartbeat("ok", { reason: "alarm" });
+    return;
+  }
+
+  if (alarm.name === tradingBridgeSupervisorAlarmName || alarm.name === tradingBridgeRestartRetryAlarmName) {
+    void superviseTradingBridgeTabs(alarm.name);
   }
 });
 
@@ -96,14 +146,24 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     changes.helperToken ||
     changes.enabled ||
     changes[listenStorageKey] ||
+    changes[listenOnlyStorageKey] ||
     changes[postStorageKey] ||
     changes[maxMessageAgeMinutesStorageKey] ||
     changes[destinationWindowKeys.dedicatedPostWindowEnabled] ||
     changes[destinationWindowKeys.dedicatedPostWindowMinimized] ||
-    changes[destinationWindowKeys.closePostWindowsOnShutdown]
+    changes[destinationWindowKeys.closePostWindowsOnShutdown] ||
+    changes.targetUrl ||
+    changes.heartbeatUrl ||
+    changes.apiKey ||
+    changes.targets ||
+    changes.forwardExistingOnEnable ||
+    changes.autoRestartEnabled
   ) {
     sourceConfigCache = null;
     void ensurePollAlarm();
+    void ensureTradingBridgeAlarms();
+    void publishTradingBridgeHeartbeat("ok", { reason: "settings_changed" });
+    void superviseTradingBridgeTabs("settings_changed");
     void pollHelper();
   }
 });
@@ -112,7 +172,14 @@ async function initializeStorageDefaults() {
   const state = await chrome.storage.local.get([
     "enabled",
     "helperToken",
+    "targetUrl",
+    "heartbeatUrl",
+    "apiKey",
+    "targets",
+    "forwardExistingOnEnable",
+    "autoRestartEnabled",
     listenStorageKey,
+    listenOnlyStorageKey,
     postStorageKey,
     maxMessageAgeMinutesStorageKey,
     destinationWindowKeys.dedicatedPostWindowEnabled,
@@ -131,12 +198,40 @@ async function initializeStorageDefaults() {
     defaults.enabled = true;
   }
 
+  if (typeof state.autoRestartEnabled !== "boolean") {
+    defaults.autoRestartEnabled = true;
+  }
+
+  if (typeof state.forwardExistingOnEnable !== "boolean") {
+    defaults.forwardExistingOnEnable = false;
+  }
+
+  if (typeof state.targetUrl !== "string") {
+    defaults.targetUrl = DEFAULT_MESSAGE_URL;
+  }
+
+  if (typeof state.heartbeatUrl !== "string") {
+    defaults.heartbeatUrl = DEFAULT_HEARTBEAT_URL;
+  }
+
+  if (typeof state.apiKey !== "string") {
+    defaults.apiKey = "";
+  }
+
+  if (!Array.isArray(state.targets)) {
+    defaults.targets = [];
+  }
+
   if (typeof state.helperToken !== "string") {
     defaults.helperToken = "";
   }
 
   if (!Array.isArray(state[listenStorageKey])) {
     defaults[listenStorageKey] = [];
+  }
+
+  if (!Array.isArray(state[listenOnlyStorageKey])) {
+    defaults[listenOnlyStorageKey] = [];
   }
 
   if (!Array.isArray(state[postStorageKey])) {
@@ -208,8 +303,13 @@ async function submitPayload(payload) {
     body: submission.body
   });
   const createdCount = Array.isArray(result?.createdJobs) ? result.createdJobs.length : 0;
+  if (submission.mode === "listen-only" && result?.capturedOnly !== true) {
+    throw new Error("Helper must be restarted or updated to support listen-only capture");
+  }
   await setStatus(
-    result?.skippedDuplicate ? "event skipped duplicate" : `event submitted (${createdCount} jobs, ${submission.mode})`
+    result?.skippedDuplicate ? "event skipped duplicate" : result?.capturedOnly
+      ? "captured locally (listen only, no repost)"
+      : `event submitted (${createdCount} jobs, ${submission.mode})`
   );
   return { ok: true, result };
 }
@@ -268,6 +368,17 @@ async function ensureNativeHelper(knownToken = "", options = {}) {
     return null;
   }
 
+  if (nativeHelperEnsurePromise) {
+    return nativeHelperEnsurePromise;
+  }
+
+  nativeHelperEnsurePromise = ensureNativeHelperOnce(token, options).finally(() => {
+    nativeHelperEnsurePromise = null;
+  });
+  return nativeHelperEnsurePromise;
+}
+
+async function ensureNativeHelperOnce(token, options = {}) {
   try {
     nativeShutdownRequested = false;
     const helperTimeoutMs = Number.isFinite(options.helperTimeoutMs) ? options.helperTimeoutMs : 30_000;
@@ -405,6 +516,7 @@ async function shutdownAll() {
 async function processJob(job) {
   let sendResult;
   try {
+    await assertRepostAllowed(job);
     const tab = await openOrReuseDestinationTab(job.destinationUrl);
     await waitForTabComplete(tab.id);
     await ensureContentScript(tab.id);
@@ -437,6 +549,7 @@ async function postJobWithTrustedInput(tabId, job) {
     return prepareResult;
   }
 
+  await assertRepostAllowed(job);
   await typeRepostWithDebugger(tabId, job.messageText);
 
   const draftResult = await chrome.tabs.sendMessage(tabId, {
@@ -447,6 +560,7 @@ async function postJobWithTrustedInput(tabId, job) {
     return draftResult;
   }
 
+  await assertRepostAllowed(job);
   await pressEnterWithDebugger(tabId);
 
   return chrome.tabs.sendMessage(tabId, {
@@ -454,6 +568,13 @@ async function postJobWithTrustedInput(tabId, job) {
     job,
     beforeMessageKeys: Array.isArray(prepareResult.beforeMessageKeys) ? prepareResult.beforeMessageKeys : []
   });
+}
+
+async function assertRepostAllowed(job) {
+  const state = await chrome.storage.local.get({ [listenOnlyStorageKey]: [] });
+  if (sourceRoutingHelpers.isListenOnlyPayload(job.payload || job, state[listenOnlyStorageKey])) {
+    throw new Error("source is listen-only; repost suppressed");
+  }
 }
 
 async function typeRepostWithDebugger(tabId, text) {
@@ -557,9 +678,32 @@ async function reportFailure(job, reason) {
   }
 }
 
-async function openOrReuseDestinationTab(destinationUrl) {
-  if (!isDiscordChannelUrl(destinationUrl)) {
+function openOrReuseDestinationTab(destinationUrl) {
+  const normalizedDestination = destinationWindowHelpers.normalizeDiscordChannelUrl(destinationUrl);
+  if (!normalizedDestination) {
     throw new Error("Job destinationUrl must be a Discord channel URL");
+  }
+
+  const existingPromise = destinationTabOpenPromises.get(normalizedDestination.url);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const openPromise = openOrReuseDestinationTabOnce(normalizedDestination).finally(() => {
+    if (destinationTabOpenPromises.get(normalizedDestination.url) === openPromise) {
+      destinationTabOpenPromises.delete(normalizedDestination.url);
+    }
+  });
+  destinationTabOpenPromises.set(normalizedDestination.url, openPromise);
+  return openPromise;
+}
+
+async function openOrReuseDestinationTabOnce(normalizedDestination) {
+  const tabs = await chrome.tabs.query({ url: "https://discord.com/channels/*" });
+  const existing = destinationWindowHelpers.findDiscordChannelTab(tabs, normalizedDestination.url);
+  if (existing?.id) {
+    await chrome.tabs.update(existing.id, { active: true });
+    return chrome.tabs.get(existing.id);
   }
 
   const state = await chrome.storage.local.get([
@@ -572,23 +716,18 @@ async function openOrReuseDestinationTab(destinationUrl) {
   ]);
   const windowState = destinationWindowHelpers.normalizeDedicatedWindowState(state);
   if (windowState.dedicatedPostWindowEnabled) {
-    return openOrReuseDedicatedDestinationTab(destinationUrl, windowState);
+    return openOrReuseDedicatedDestinationTab(normalizedDestination.url, windowState, { minimizeOnCreate: false });
   }
 
-  const tabs = await chrome.tabs.query({ url: "https://discord.com/channels/*" });
-  const existing = tabs.find((tab) => tab.url && sameDiscordChannel(tab.url, destinationUrl));
-  if (existing?.id) {
-    await chrome.tabs.update(existing.id, { active: true });
-    return chrome.tabs.get(existing.id);
-  }
-
-  const tab = await chrome.tabs.create({ url: destinationUrl, active: true });
+  const tab = await chrome.tabs.create({ url: normalizedDestination.url, active: true });
   await trackManagedDestinationSurface({ tabIds: [tab.id] });
   return tab;
 }
 
 async function openDedicatedPostWindowFromPopup(message = {}) {
   const state = await chrome.storage.local.get([
+    listenStorageKey,
+    listenOnlyStorageKey,
     postStorageKey,
     destinationWindowKeys.dedicatedPostWindowEnabled,
     destinationWindowKeys.dedicatedPostWindowMinimized,
@@ -596,7 +735,9 @@ async function openDedicatedPostWindowFromPopup(message = {}) {
     destinationWindowKeys.managedDestinationWindowId,
     destinationWindowKeys.managedDestinationTabIds
   ]);
-  const destinationUrl = destinationWindowHelpers.choosePostWindowUrl({
+  const workspaceUrls = destinationWindowHelpers.chooseWorkspaceUrls({
+    listenChannelUrls: state[listenStorageKey],
+    listenOnlyChannelUrls: state[listenOnlyStorageKey],
     postChannelUrls: state[postStorageKey],
     fallbackUrl: message.requestedPostUrl || ""
   });
@@ -607,12 +748,15 @@ async function openDedicatedPostWindowFromPopup(message = {}) {
   await chrome.storage.local.set({
     [destinationWindowKeys.dedicatedPostWindowEnabled]: true
   });
-  const tab = await openOrReuseDedicatedDestinationTab(destinationUrl, windowState);
-  await setStatus(`opened post window ${destinationWindowHelpers.normalizeDiscordChannelUrl(destinationUrl).channelId}`);
-  return { ok: true, tabId: tab.id, url: destinationUrl };
+  const tabs = [];
+  for (const url of workspaceUrls) {
+    tabs.push(await openOrReuseDedicatedDestinationTab(url, windowState, { minimizeOnCreate: true }));
+  }
+  await setStatus(`opened post workspace (${workspaceUrls.length} tabs)`);
+  return { ok: true, tabIds: tabs.map((tab) => tab.id).filter(Boolean), urls: workspaceUrls, url: workspaceUrls.at(-1) };
 }
 
-async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState) {
+async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState, { minimizeOnCreate = false } = {}) {
   const normalized = destinationWindowHelpers.normalizeDiscordChannelUrl(destinationUrl);
   if (!normalized) {
     throw new Error("Job destinationUrl must be a Discord channel URL");
@@ -620,10 +764,9 @@ async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState) {
 
   const storedWindow = await getManagedDestinationWindow(windowState.managedDestinationWindowId);
   if (storedWindow) {
-    const existing = (storedWindow.tabs || []).find((tab) => tab.url && sameDiscordChannel(tab.url, normalized.url));
+    const existing = destinationWindowHelpers.findDiscordChannelTab(storedWindow.tabs || [], normalized.url);
     if (existing?.id) {
       await chrome.tabs.update(existing.id, { active: true });
-      await maybeMinimizeManagedWindow(storedWindow.id, windowState);
       await trackManagedDestinationSurface({ windowId: storedWindow.id, tabIds: [existing.id] });
       return chrome.tabs.get(existing.id);
     }
@@ -633,7 +776,6 @@ async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState) {
       url: normalized.url,
       active: true
     });
-    await maybeMinimizeManagedWindow(storedWindow.id, windowState);
     await trackManagedDestinationSurface({ windowId: storedWindow.id, tabIds: [tab.id] });
     return tab;
   }
@@ -642,13 +784,24 @@ async function openOrReuseDedicatedDestinationTab(destinationUrl, windowState) {
   if (!createdWindow?.id) {
     throw new Error("Dedicated post window opened without a Chrome window id");
   }
-  await maybeMinimizeManagedWindow(createdWindow.id, windowState);
+  windowState.managedDestinationWindowId = createdWindow.id;
+  if (minimizeOnCreate) {
+    await maybeMinimizeManagedWindow(createdWindow.id, windowState);
+  }
   const tab = createdWindow.tabs?.[0] || (await chrome.tabs.query({ windowId: createdWindow.id })).at(0);
   if (!tab?.id) {
     throw new Error("Dedicated post window opened without a Discord tab");
   }
+  windowState.managedDestinationTabIds = addManagedTabId(windowState.managedDestinationTabIds, tab.id);
   await trackManagedDestinationSurface({ windowId: createdWindow.id, tabIds: [tab.id] });
   return tab;
+}
+
+function addManagedTabId(tabIds, tabId) {
+  const normalizedIds = destinationWindowHelpers.normalizeDedicatedWindowState({
+    managedDestinationTabIds: tabIds
+  }).managedDestinationTabIds;
+  return normalizedIds.includes(tabId) ? normalizedIds : [...normalizedIds, tabId];
 }
 
 async function createManagedDestinationWindow(url) {
@@ -738,23 +891,15 @@ async function closeManagedDestinationSurfaces(windowState) {
 }
 
 async function ensureContentScript(tabId) {
-  if (await pingContentScript(tabId)) {
-    return;
-  }
-
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["src/parser.js", "src/content.js"]
-  });
-
-  if (!(await pingContentScript(tabId))) {
-    throw new Error("Discord content script is unavailable");
+  const result = await ensureCombinedContentScript(tabId);
+  if (!result.ok) {
+    throw new Error(result.error || "Discord content script is unavailable");
   }
 }
 
 async function pingContentScript(tabId) {
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: "ping" });
+    const response = await chrome.tabs.sendMessage(tabId, { type: "copy-repost:ping" });
     return response?.ok === true && response.version === contentScriptVersion;
   } catch {
     return false;
@@ -784,14 +929,16 @@ async function getEnabledSourceConfig() {
   const {
     helperToken = "",
     listenChannelUrls = [],
+    listenOnlyChannelUrls = [],
     postChannelUrls = []
-  } = await chrome.storage.local.get(["helperToken", listenStorageKey, postStorageKey]);
+  } = await chrome.storage.local.get(["helperToken", listenStorageKey, listenOnlyStorageKey, postStorageKey]);
   const token = normalizeToken(helperToken);
   const listenUrls = routeHelpers.normalizeUrlList(listenChannelUrls);
   const postUrls = routeHelpers.normalizeUrlList(postChannelUrls);
-  const usesPopupRoutes = routeHelpers.hasStoredRoutes(listenUrls, postUrls);
+  const listenOnlyUrls = routeHelpers.normalizeUrlList(listenOnlyChannelUrls);
+  const usesPopupRoutes = routeHelpers.hasStoredRoutes(listenUrls, postUrls) || listenOnlyUrls.length > 0;
   const cacheKey = usesPopupRoutes
-    ? `${token}|popup|${listenUrls.join(",")}|${postUrls.join(",")}`
+    ? `${token}|popup|${listenUrls.join(",")}|${postUrls.join(",")}|${listenOnlyUrls.join(",")}`
     : `${token}|helper-config`;
   const now = Date.now();
   if (sourceConfigCache && sourceConfigCache.cacheKey === cacheKey && sourceConfigCache.expiresAt > now) {
@@ -813,7 +960,8 @@ async function getEnabledSourceConfig() {
     expiresAt: now + configCacheTtlMs,
     ...sourceRoutingHelpers.buildSourceConfig({
       helperConfig,
-      runtimeMappings
+      runtimeMappings,
+      listenOnlyChannelUrls: listenOnlyUrls
     })
   };
   return sourceConfigCache;
@@ -885,33 +1033,6 @@ function normalizeToken(token) {
   return typeof token === "string" ? token.trim() : "";
 }
 
-function isDiscordChannelUrl(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    return url.protocol === "https:" && url.hostname === "discord.com" && /^\/channels\/\d+\/\d+/.test(url.pathname);
-  } catch {
-    return false;
-  }
-}
-
-function sameDiscordChannel(tabUrl, destinationUrl) {
-  const tabChannel = discordChannelPrefix(tabUrl);
-  const destinationChannel = discordChannelPrefix(destinationUrl);
-  return Boolean(tabChannel && destinationChannel && tabChannel === destinationChannel);
-}
-
-function discordChannelPrefix(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    const match = url.pathname.match(/^\/channels\/(\d+)\/(\d+)/);
-    return url.protocol === "https:" && url.hostname === "discord.com" && match
-      ? `${url.origin}/channels/${match[1]}/${match[2]}`
-      : "";
-  } catch {
-    return "";
-  }
-}
-
 async function setStatus(lastStatus) {
   await chrome.storage.local.set({
     lastStatus,
@@ -925,6 +1046,340 @@ async function setLauncherStatus(launcherStatus, state = "") {
     launcherStatusState: state,
     launcherStatusAt: new Date().toISOString()
   });
+}
+
+async function ensureTradingBridgeAlarms() {
+  await chrome.alarms.create(tradingBridgeHeartbeatAlarmName, { periodInMinutes: 1 });
+  await chrome.alarms.create(tradingBridgeSupervisorAlarmName, { periodInMinutes: 1 });
+}
+
+async function publishTradingBridgeHeartbeat(status = "ok", details = {}) {
+  try {
+    const settings = await getTradingBridgeSettings();
+    const payload = {
+      status,
+      bridge_enabled: Boolean(settings.enabled),
+      url: "chrome-extension://sentinel-link-service-worker",
+      channel_id: "sentinel-link-service-worker",
+      channel_name: "Sentinel Link",
+      observed_at: new Date().toISOString(),
+      last_forward_at: settings.lastForwardAt || "",
+      last_forward_status: settings.lastForwardStatus || "",
+      details: {
+        source: "sentinel_link_service_worker",
+        targets: enabledBridgeTargets(settings).map((target) => ({
+          id: target.id,
+          name: target.name,
+          messageUrl: target.messageUrl
+        })),
+        ...details
+      }
+    };
+    return await forwardTradingBridgeHeartbeat(payload);
+  } catch (error) {
+    await scheduleTradingBridgeRetry(`heartbeat failed: ${readableError(error)}`);
+    await chrome.storage.local.set({
+      lastHeartbeatStatus: readableError(error),
+      lastHeartbeatAt: new Date().toISOString()
+    });
+    return null;
+  }
+}
+
+async function superviseTradingBridgeTabs(reason = "supervisor") {
+  const settings = await getTradingBridgeSettings();
+  if (!settings.enabled || !settings.autoRestartEnabled) {
+    await publishTradingBridgeHeartbeat("disabled", { reason, supervisor: "disabled" });
+    return;
+  }
+
+  try {
+    const tabs = await queryTradingBridgeDiscordTabs();
+    const matchingTabs = tabs.filter((tab) => targetsForDiscordChannel(settings, tab.url || "").length > 0);
+    if (matchingTabs.length === 0) {
+      const status = tabs.length === 0 ? "no_discord_tabs" : "no_matching_discord_tabs";
+      await publishTradingBridgeHeartbeat(status, {
+        reason,
+        discord_tabs: tabs.length,
+        configured_targets: enabledBridgeTargets(settings).length
+      });
+      await scheduleTradingBridgeRetry(tabs.length === 0 ? "no Discord tabs are open" : "no matching Discord channel tabs are open");
+      return;
+    }
+
+    const results = [];
+    for (const tab of matchingTabs) {
+      results.push(await ensureCombinedContentScript(tab.id));
+    }
+
+    const failures = results.filter((result) => !result.ok);
+    if (failures.length > 0) {
+      await publishTradingBridgeHeartbeat("restart_error", {
+        reason,
+        failures: failures.map((failure) => failure.error).slice(0, 5)
+      });
+      await scheduleTradingBridgeRetry(failures[0].error || "content script restart failed");
+      return;
+    }
+
+    await resetTradingBridgeBackoff("content script healthy");
+    await publishTradingBridgeHeartbeat("ok", {
+      reason,
+      supervised_tabs: results.length,
+      restarted_tabs: results.filter((result) => result.restarted).length,
+      unverified_tabs: results.filter((result) => result.verified === false).length
+    });
+  } catch (error) {
+    await publishTradingBridgeHeartbeat("restart_error", { reason, error: readableError(error) });
+    await scheduleTradingBridgeRetry(readableError(error));
+  }
+}
+
+function ensureCombinedContentScript(tabId) {
+  const existingPromise = contentScriptEnsurePromises.get(tabId);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const ensurePromise = ensureCombinedContentScriptOnce(tabId).finally(() => {
+    if (contentScriptEnsurePromises.get(tabId) === ensurePromise) {
+      contentScriptEnsurePromises.delete(tabId);
+    }
+  });
+  contentScriptEnsurePromises.set(tabId, ensurePromise);
+  return ensurePromise;
+}
+
+async function ensureCombinedContentScriptOnce(tabId) {
+  try {
+    if (await pingContentScript(tabId)) {
+      return { ok: true, restarted: false };
+    }
+  } catch {
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["src/parser.js", "src/trading-bridge-config.js", "src/content.js"]
+    });
+  } catch (error) {
+    return { ok: false, restarted: false, error: readableError(error) };
+  }
+
+  try {
+    const ready = await pingContentScript(tabId);
+    return {
+      ok: true,
+      restarted: true,
+      verified: ready,
+      warning: ready ? "" : "content script injection succeeded but ping was not acknowledged"
+    };
+  } catch (error) {
+    return { ok: false, restarted: true, error: readableError(error) };
+  }
+}
+
+function queryTradingBridgeDiscordTabs() {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.query({ url: tradingBridgeDiscordTabUrls }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve((tabs || []).filter((tab) => typeof tab.id === "number"));
+    });
+  });
+}
+
+async function forwardTradingBridgeHeartbeat(payload) {
+  return forwardTradingBridgePayload(payload, "heartbeat");
+}
+
+async function forwardTradingBridgeMessage(payload) {
+  const settings = await getTradingBridgeSettings();
+  if (!settings.enabled) {
+    return { status: "disabled" };
+  }
+  const {
+    maxMessageAgeMinutes = freshnessHelpers.defaultFreshnessWindowMinutes
+  } = await chrome.storage.local.get([maxMessageAgeMinutesStorageKey]);
+  const normalizedPayload = {
+    ...payload,
+    timestampIso: payload?.timestampIso || ""
+  };
+  const freshness = freshnessHelpers.payloadFreshness(normalizedPayload, { maxAgeMinutes: maxMessageAgeMinutes });
+  if (!freshness.fresh) {
+    await chrome.storage.local.set({
+      lastForwardStatus: `ignored stale bridge message: ${freshness.reason}`,
+      lastForwardAt: new Date().toISOString()
+    });
+    return { status: "skipped", skip_reason: "ignored stale bridge message", freshness };
+  }
+  return forwardTradingBridgePayload(payload, "message");
+}
+
+async function forwardTradingBridgePayload(payload, kind) {
+  const settings = await getTradingBridgeSettings();
+  const targets = tradingBridgeTargetsForPayload(settings, payload);
+  if (targets.length === 0) {
+    const key = kind === "heartbeat" ? "lastHeartbeatStatus" : "lastForwardStatus";
+    const atKey = kind === "heartbeat" ? "lastHeartbeatAt" : "lastForwardAt";
+    await chrome.storage.local.set({
+      [key]: "no_matching_target",
+      [atKey]: new Date().toISOString()
+    });
+    return { status: "skipped", skip_reason: "no matching bridge target" };
+  }
+
+  const result = await forwardTradingBridgePayloadToTargets(targets, payload, kind);
+  const updates = kind === "heartbeat"
+    ? {
+      lastHeartbeatStatus: result.status,
+      lastHeartbeatAt: new Date().toISOString(),
+      lastHeartbeatTargets: result.targets
+    }
+    : {
+      lastForwardStatus: result.status,
+      lastForwardAt: new Date().toISOString(),
+      lastForwardEventId: payload.event_id,
+      lastForwardTargets: result.targets
+    };
+  await chrome.storage.local.set(updates);
+  return result;
+}
+
+async function forwardTradingBridgePayloadToTargets(targets, payload, kind) {
+  const successes = [];
+  const failures = [];
+  for (const target of targets) {
+    try {
+      const body = await forwardTradingBridgePayloadToTarget(target, payload, kind);
+      successes.push({
+        id: target.id,
+        name: target.name,
+        status: body.status || (kind === "heartbeat" ? "healthy" : "accepted"),
+        body
+      });
+    } catch (error) {
+      failures.push({
+        id: target.id,
+        name: target.name,
+        error: readableError(error)
+      });
+    }
+  }
+
+  if (successes.length === 0 && failures.length > 0) {
+    throw new Error(failures.map((failure) => `${failure.name}: ${failure.error}`).join("; "));
+  }
+
+  return {
+    status: failures.length > 0 ? "partial" : (kind === "heartbeat" ? "healthy" : "accepted"),
+    targets: successes,
+    failures
+  };
+}
+
+async function forwardTradingBridgePayloadToTarget(target, payload, kind) {
+  const headers = { "Content-Type": "application/json" };
+  if (target.apiKey) {
+    headers["X-API-Key"] = target.apiKey;
+  }
+
+  const primaryUrl = kind === "heartbeat" ? target.heartbeatUrl || heartbeatUrlFor(target.messageUrl) : target.messageUrl;
+  const requestBody = JSON.stringify({
+    ...payload,
+    bridge_target_id: target.id,
+    bridge_target_name: target.name
+  });
+  const urls = [primaryUrl, ...localSentinelEchoFallbackUrls(target, kind, primaryUrl)];
+  const failures = [];
+
+  for (const url of urls) {
+    try {
+      const body = await postTradingBridgeJson(url, headers, requestBody, kind);
+      if (url !== primaryUrl && body && typeof body === "object" && !Array.isArray(body)) {
+        body.bridge_fallback_url = url;
+      }
+      return body;
+    } catch (error) {
+      failures.push(`${url}: ${readableError(error)}`);
+    }
+  }
+
+  throw new Error(failures.join("; ") || `${kind} request failed`);
+}
+
+async function postTradingBridgeJson(url, headers, requestBody, kind) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), tradingBridgeFetchTimeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: requestBody,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const text = await response.text();
+  let responseBody = {};
+  if (text) {
+    try {
+      responseBody = JSON.parse(text);
+    } catch {
+      responseBody = { text };
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(responseBody.detail || responseBody.text || `${kind} request failed with HTTP ${response.status}`);
+  }
+
+  return responseBody;
+}
+
+function tradingBridgeTargetsForPayload(settings, payload) {
+  if (payload && canonicalDiscordChannelUrl(payload.url || "")) {
+    return targetsForDiscordChannel(settings, payload.url, payload.channel_id);
+  }
+  return enabledBridgeTargets(settings);
+}
+
+async function getTradingBridgeSettings() {
+  const settings = await chrome.storage.local.get(tradingBridgeDefaults);
+  return { ...tradingBridgeDefaults, ...settings };
+}
+
+async function scheduleTradingBridgeRetry(reason) {
+  const settings = await getTradingBridgeSettings();
+  if (!settings.autoRestartEnabled) {
+    return;
+  }
+
+  const attempt = Number(settings.bridgeRestartAttempt || 0);
+  const delaySeconds = Math.min(300, 5 * Math.pow(2, attempt));
+  const nextRestartAt = Date.now() + delaySeconds * 1000;
+  await chrome.storage.local.set({
+    bridgeRestartAttempt: attempt + 1,
+    lastRestartStatus: String(reason || "restart scheduled"),
+    lastRestartRetryAt: new Date().toISOString(),
+    nextRestartAt: new Date(nextRestartAt).toISOString()
+  });
+  await chrome.alarms.create(tradingBridgeRestartRetryAlarmName, { when: nextRestartAt });
+}
+
+async function resetTradingBridgeBackoff(status) {
+  await chrome.storage.local.set({
+    bridgeRestartAttempt: 0,
+    lastRestartStatus: status || "healthy",
+    nextRestartAt: ""
+  });
+  await chrome.alarms.clear(tradingBridgeRestartRetryAlarmName);
 }
 
 function readableError(error) {

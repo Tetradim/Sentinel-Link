@@ -1,5 +1,5 @@
 param(
-    [string]$ExtensionId = "bfnjhgnbompdhdakmfohoahoohalkhpi",
+    [string[]]$ExtensionId = @("bfnjhgnbompdhdakmfohoahoohalkhpi"),
     [string]$HostName = "com.tetradim.discord_copy_repost",
     [string]$RepoRoot = ""
 )
@@ -47,6 +47,60 @@ function Find-CSharpCompiler {
     throw "C# compiler csc.exe was not found. Install .NET Framework developer tools, then rerun this installer."
 }
 
+function Normalize-PathForCompare {
+    param([string]$Path)
+    if (-not $Path) {
+        return ""
+    }
+
+    try {
+        return [System.IO.Path]::GetFullPath($Path).TrimEnd("\").ToLowerInvariant()
+    } catch {
+        return $Path.TrimEnd("\").ToLowerInvariant()
+    }
+}
+
+function Find-InstalledCopyRepostExtensionIds {
+    param([string]$ExtensionPath)
+
+    $chromeUserData = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
+    if (-not (Test-Path -LiteralPath $chromeUserData)) {
+        return @()
+    }
+
+    $targetPath = Normalize-PathForCompare $ExtensionPath
+    $ids = New-Object System.Collections.Generic.List[string]
+    $profiles = Get-ChildItem -LiteralPath $chromeUserData -Directory -ErrorAction SilentlyContinue
+    foreach ($profile in $profiles) {
+        foreach ($fileName in @("Secure Preferences", "Preferences")) {
+            $preferencesPath = Join-Path $profile.FullName $fileName
+            if (-not (Test-Path -LiteralPath $preferencesPath)) {
+                continue
+            }
+
+            try {
+                $preferences = Get-Content -LiteralPath $preferencesPath -Raw | ConvertFrom-Json
+            } catch {
+                continue
+            }
+
+            $settings = $preferences.extensions.settings
+            if (-not $settings) {
+                continue
+            }
+
+            foreach ($extension in $settings.PSObject.Properties) {
+                $installedPath = Normalize-PathForCompare $extension.Value.path
+                if ($installedPath -eq $targetPath) {
+                    $ids.Add($extension.Name)
+                }
+            }
+        }
+    }
+
+    return $ids.ToArray()
+}
+
 $node = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $node) {
     $node = Get-Command node -ErrorAction SilentlyContinue
@@ -69,6 +123,20 @@ $launcherSourcePath = Join-Path $binDir "copy-repost-native-host-launcher.cs"
 $launcherExePath = Join-Path $binDir "copy-repost-native-host.exe"
 $oldWrapperPath = Join-Path $binDir "copy-repost-native-host.cmd"
 $manifestPath = Join-Path $manifestDir "$HostName.json"
+$copyRepostExtensionPath = Join-Path $RepoRoot "extensions\copy-repost"
+$detectedExtensionIds = Find-InstalledCopyRepostExtensionIds $copyRepostExtensionPath
+$allExtensionIds = @($ExtensionId) + @($detectedExtensionIds) |
+    Where-Object { $_ -match "^[a-p]{32}$" } |
+    Select-Object -Unique
+if (-not $allExtensionIds -or $allExtensionIds.Count -eq 0) {
+    throw "No valid Chrome extension IDs were supplied or detected for the Copy/Repost extension."
+}
+
+$allowedOriginLines = for ($i = 0; $i -lt $allExtensionIds.Count; $i++) {
+    $suffix = if ($i -lt ($allExtensionIds.Count - 1)) { "," } else { "" }
+    "    `"chrome-extension://$($allExtensionIds[$i])/`"$suffix"
+}
+$allowedOriginsJson = $allowedOriginLines -join "`r`n"
 
 $launcherSource = @"
 using System;
@@ -175,7 +243,7 @@ $manifest = @"
   "path": "$(ConvertTo-JsonEscaped $launcherExePath)",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://$ExtensionId/"
+$allowedOriginsJson
   ]
 }
 "@
@@ -185,7 +253,7 @@ $registryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
 New-Item -Path $registryPath -Force | Out-Null
 Set-Item -Path $registryPath -Value $manifestPath
 
-Write-Step "Registered $HostName for Chrome extension $ExtensionId"
+Write-Step "Registered $HostName for Chrome extension(s): $($allExtensionIds -join ', ')"
 Write-Step "Manifest: $manifestPath"
 Write-Step "Launcher: $launcherExePath"
 Write-Step "Reload the unpacked Copy/Repost extension in chrome://extensions."

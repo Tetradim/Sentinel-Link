@@ -199,6 +199,26 @@ test("extractAlertFromMessageNode captures visible Discord message content", asy
   assert.match(alert.capturedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 });
 
+test("card markup is not duplicated into the message body and field lines survive", async () => {
+  const parser = await loadParser();
+  const message = createElement({ id: messageNodeId, children: [
+    createElement({ className: "markup", text: "@AQ Trades" }),
+    createElement({ tagName: "article", className: "embedFull markup", children: [
+      createElement({ className: "embedTitle", text: "Alerted By | AQTrades" }),
+      createElement({ className: "embedDescription markup", text: "NVDA $230 Calls\nEntry details" }),
+      createElement({ className: "embedField", children: [
+        createElement({ className: "embedFieldName", text: "TRIMS" }),
+        createElement({ className: "embedFieldValue markup", text: "TRIMMED 3/4 - $1.19\n40%" })
+      ] })
+    ] })
+  ] });
+  const payload = parser.extractAlertFromMessageNode(message, sourceUrl);
+  assert.equal(payload.text, "@AQ Trades");
+  assert.equal(payload.embeds.length, 1);
+  assert.equal(payload.embeds[0].description, "NVDA $230 Calls\nEntry details");
+  assert.equal(payload.embeds[0].fields[0].value, "TRIMMED 3/4 - $1.19\n40%");
+});
+
 test("extractAlertFromMessageNode preserves multi-segment alert body text", async () => {
   const parser = await loadParser();
   const messageNode = createElement({
@@ -278,6 +298,37 @@ test("extractAlertFromMessageNode inherits author across wrapped grouped message
   const alert = parser.extractAlertFromMessageNode(continuation, sourceUrl);
 
   assert.equal(alert.author, "MikeInvesting");
+});
+
+test("grouped continuations inherit message context and retain the raw Discord author", async () => {
+  const parser = await loadParser();
+  const firstMessage = createElement({
+    id: `chat-messages-${sourceChannelId}-111111111111111111`,
+    attrs: { role: "listitem" },
+    children: [
+      createElement({ className: "username", text: "MikeInvesting(WILL NOT DM FIRST) [MIKE], Server Tag: OPTIONS" }),
+      createElement({
+        tagName: "time",
+        text: "Today at 9:51 AM",
+        attrs: { datetime: "2026-09-11T14:51:00.000Z" }
+      }),
+      createElement({ className: "markup", text: "$SPY $767 PUTS" })
+    ]
+  });
+  const continuation = createElement({
+    id: messageNodeId,
+    attrs: { role: "listitem" },
+    children: [createElement({ className: "markup", text: "IN AT $.26" })]
+  });
+  linkSiblings(createElement({ children: [firstMessage, continuation] }));
+
+  const alert = parser.extractAlertFromMessageNode(continuation, sourceUrl);
+
+  assert.equal(alert.author, "MikeInvesting");
+  assert.equal(alert.authorRaw, "MikeInvesting(WILL NOT DM FIRST) [MIKE], Server Tag: OPTIONS");
+  assert.equal(alert.timestampText, "Today at 9:51 AM");
+  assert.equal(alert.timestampIso, "2026-09-11T14:51:00.000Z");
+  assert.match(alert.revisionHash, /^[a-f0-9]+$/);
 });
 
 test("extractAlertFromMessageNode handles absent selectors without throwing", async () => {

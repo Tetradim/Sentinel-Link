@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
-import { dirname } from "node:path";
+import { appendFile, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   createDedupeKey,
   createVisibleDedupeKey,
@@ -12,14 +12,22 @@ import { nextRetryDelayMs } from "./retry.js";
 
 const emptyState = () => ({ jobs: [], events: [], seen: {} });
 const defaultLeaseMs = 180_000;
+const defaultRetention = Object.freeze({ maxEvents: 5000, maxTerminalJobs: 1000, maxSeen: 5000 });
 
-export async function createJsonStore(filePath) {
+export async function createJsonStore(filePath, retentionInput = {}) {
   let state = await loadState(filePath);
   let writeChain = Promise.resolve();
+  const retention = normalizeRetention(retentionInput);
 
   function persist() {
+    const compacted = compactState(state, retention);
+    state = compacted.state;
     const stateToWrite = clone(state);
-    const write = writeChain.catch(() => {}).then(() => writeState(filePath, stateToWrite));
+    const archived = compacted.archived;
+    const write = writeChain.catch(() => {}).then(async () => {
+      await appendArchive(filePath, archived);
+      await writeState(filePath, stateToWrite);
+    });
     writeChain = write;
     return write;
   }
@@ -74,9 +82,36 @@ export async function createJsonStore(filePath) {
 
   if (resetExpiredLeases(new Date())) {
     await persist();
+  } else {
+    const compacted = compactState(state, retention);
+    if (compacted.archived.length > 0) {
+      state = compacted.state;
+      await appendArchive(filePath, compacted.archived);
+      await writeState(filePath, clone(state));
+    }
   }
 
   return {
+    async captureAlert(payloadInput) {
+      const payload = validateAlertPayload(payloadInput);
+      const dedupeKey = createDedupeKey(payload);
+      const visibleDedupeKey = createVisibleDedupeKey(payload);
+      const now = new Date();
+      const existing = state.seen[dedupeKey];
+      const updated = isChangedRevision(existing, payload);
+      const skippedDuplicate = !updated && Boolean(existing || state.seen[visibleDedupeKey]);
+      if (skippedDuplicate) {
+        appendEvent("skipped_duplicate", { dedupeKey, sourceChannelId: payload.sourceChannelId, messageId: payload.messageId }, now);
+      } else {
+        appendEvent(updated ? "message_updated" : "captured_only", { dedupeKey, sourceChannelId: payload.sourceChannelId, messageId: payload.messageId, payload }, now);
+        const seen = seenRecord(payload, now);
+        state.seen[dedupeKey] = seen;
+        state.seen[visibleDedupeKey] = seen;
+      }
+      await persist();
+      return { capturedOnly: true, skippedDuplicate, updated, createdJobs: [] };
+    },
+
     async enqueueAlert(config, payloadInput) {
       const validConfig = validateConfig(config);
       const payload = validateAlertPayload(payloadInput);
@@ -84,7 +119,17 @@ export async function createJsonStore(filePath) {
       const visibleDedupeKey = createVisibleDedupeKey(payload);
       const now = new Date();
 
-      if (state.seen[dedupeKey] || state.seen[visibleDedupeKey]) {
+      const existing = state.seen[dedupeKey];
+      if (isChangedRevision(existing, payload)) {
+        appendEvent("message_updated", { dedupeKey, visibleDedupeKey, sourceChannelId: payload.sourceChannelId, messageId: payload.messageId, payload }, now);
+        const seen = seenRecord(payload, now);
+        state.seen[dedupeKey] = seen;
+        state.seen[visibleDedupeKey] = seen;
+        await persist();
+        return { skippedDuplicate: false, updated: true, createdJobs: [] };
+      }
+
+      if (existing || state.seen[visibleDedupeKey]) {
         appendEvent(
           "skipped_duplicate",
           {
@@ -151,16 +196,9 @@ export async function createJsonStore(filePath) {
           now
         );
       } else {
-        state.seen[dedupeKey] = {
-          sourceChannelId: payload.sourceChannelId,
-          messageId: payload.messageId,
-          seenAt: now.toISOString()
-        };
-        state.seen[visibleDedupeKey] = {
-          sourceChannelId: payload.sourceChannelId,
-          messageId: payload.messageId,
-          seenAt: now.toISOString()
-        };
+        const seen = seenRecord(payload, now);
+        state.seen[dedupeKey] = seen;
+        state.seen[visibleDedupeKey] = seen;
       }
 
       await persist();
@@ -281,15 +319,19 @@ export async function createJsonStore(filePath) {
 
 async function writeState(filePath, state) {
   await mkdir(dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  const handle = await open(tempPath, "w");
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
-    await handle.sync();
+    const handle = await open(tempPath, "w");
+    try {
+      await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tempPath, filePath);
   } finally {
-    await handle.close();
+    await rm(tempPath, { force: true });
   }
-  await rename(tempPath, filePath);
 }
 
 async function loadState(filePath) {
@@ -328,4 +370,77 @@ function jobEventFields(job, fields = {}) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeRetention(input) {
+  return {
+    maxEvents: positiveInteger(input.maxEvents, defaultRetention.maxEvents),
+    maxTerminalJobs: positiveInteger(input.maxTerminalJobs, defaultRetention.maxTerminalJobs),
+    maxSeen: positiveInteger(input.maxSeen, defaultRetention.maxSeen)
+  };
+}
+
+function positiveInteger(value, fallback) {
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function compactState(input, retention) {
+  const state = clone(input);
+  const archivedAt = new Date().toISOString();
+  const archived = [];
+  const activeJobs = state.jobs.filter((job) => !isTerminalJob(job));
+  const terminalJobs = state.jobs.filter(isTerminalJob);
+  if (terminalJobs.length > retention.maxTerminalJobs) {
+    const removeCount = terminalJobs.length - retention.maxTerminalJobs;
+    for (const record of terminalJobs.slice(0, removeCount)) {
+      archived.push({ recordType: "job", archivedAt, record });
+    }
+    state.jobs = [...activeJobs, ...terminalJobs.slice(removeCount)].sort(compareCreatedAt);
+  }
+
+  if (state.events.length > retention.maxEvents) {
+    const removeCount = state.events.length - retention.maxEvents;
+    for (const record of state.events.slice(0, removeCount)) {
+      archived.push({ recordType: "event", archivedAt, record });
+    }
+    state.events = state.events.slice(removeCount);
+  }
+
+  const seenEntries = Object.entries(state.seen).sort((left, right) =>
+    String(left[1]?.seenAt || "").localeCompare(String(right[1]?.seenAt || ""))
+  );
+  if (seenEntries.length > retention.maxSeen) {
+    state.seen = Object.fromEntries(seenEntries.slice(seenEntries.length - retention.maxSeen));
+  }
+  return { state, archived };
+}
+
+function isTerminalJob(job) {
+  return job?.status === "sent" || job?.status === "failed";
+}
+
+function compareCreatedAt(left, right) {
+  return String(left?.createdAt || "").localeCompare(String(right?.createdAt || ""));
+}
+
+async function appendArchive(filePath, archived) {
+  if (!archived.length) return;
+  const date = archived[0].archivedAt.slice(0, 10);
+  const archiveDir = join(dirname(filePath), "archive");
+  await mkdir(archiveDir, { recursive: true });
+  const lines = archived.map((entry) => JSON.stringify(entry)).join("\n");
+  await appendFile(join(archiveDir, `history-${date}.jsonl`), `${lines}\n`, "utf8");
+}
+
+function seenRecord(payload, now) {
+  return {
+    sourceChannelId: payload.sourceChannelId,
+    messageId: payload.messageId,
+    revisionHash: payload.revisionHash,
+    seenAt: now.toISOString()
+  };
+}
+
+function isChangedRevision(existing, payload) {
+  return Boolean(existing && existing.revisionHash && payload.revisionHash && existing.revisionHash !== payload.revisionHash);
 }

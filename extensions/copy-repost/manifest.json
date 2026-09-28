@@ -1,25 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Discord Copy Repost Helper",
-  "version": "0.1.10",
-  "description": "Copies visible Discord alerts from configured channels and reposts them through the visible Discord web composer.",
+  "name": "Sentinel Link",
+  "version": "0.2.4",
+  "description": "Links visible Discord alerts to Sentinel Echo and the local copy/repost helper.",
   "permissions": ["tabs", "storage", "scripting", "alarms", "debugger", "nativeMessaging"],
   "host_permissions": [
-    "https://discord.com/channels/*",
-    "http://127.0.0.1:17654/*"
+    "https://discord.com/*",
+    "https://*.discord.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "src/background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://discord.com/channels/*"],
-      "js": ["src/parser.js", "src/content.js"],
+      "matches": ["https://discord.com/*", "https://*.discord.com/*"],
+      "js": ["src/parser.js", "src/trading-bridge-config.js", "src/content.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "src/popup.html",
-    "default_title": "Copy Repost Helper"
+    "default_title": "Sentinel Link"
   }
 }

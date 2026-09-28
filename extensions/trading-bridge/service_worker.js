@@ -190,7 +190,7 @@ function executeContentScript(tabId) {
     chrome.scripting.executeScript(
       {
         target: { tabId },
-        files: ["bridge_config.js", "content.js"],
+        files: ["parser.js", "bridge_config.js", "content.js"],
       },
       () => {
         if (chrome.runtime.lastError) {

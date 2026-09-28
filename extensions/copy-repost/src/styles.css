@@ -10,7 +10,7 @@
 }
 
 body {
-  width: 380px;
+  width: 460px;
   margin: 0;
   background: #f7f8fa;
 }
@@ -68,16 +68,31 @@ h2 {
 
 input[type="password"],
 input[type="text"],
+input[type="url"],
+textarea,
 select {
   width: 100%;
   min-width: 0;
-  height: 34px;
   border: 1px solid #cbd2d9;
   border-radius: 6px;
-  padding: 0 10px;
   font: 13px ui-monospace, "SFMono-Regular", Consolas, monospace;
   background: #ffffff;
   color: #102a43;
+}
+
+input[type="password"],
+input[type="text"],
+input[type="url"],
+select {
+  height: 34px;
+  padding: 0 10px;
+}
+
+textarea {
+  min-height: 128px;
+  resize: vertical;
+  padding: 8px 10px;
+  line-height: 1.35;
 }
 
 select {

@@ -23,6 +23,34 @@ function fromSandbox(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test("listen-only overrides popup and helper repost routes without destinations", async () => {
+  const routing = await loadSourceRouting();
+  const sourceUrl = "https://discord.com/channels/111/222";
+  const mapping = { enabled: true, sourceUrl, destinationUrls: ["https://discord.com/channels/111/333"] };
+  const sourceConfig = routing.buildSourceConfig({
+    helperConfig: { mappings: [mapping] },
+    runtimeMappings: [mapping],
+    listenOnlyChannelUrls: [sourceUrl]
+  });
+  const payload = { sourceUrl, sourceChannelId: "222", text: "card text" };
+  const submission = routing.selectSubmissionForPayload(payload, sourceConfig);
+  assert.equal(submission.mode, "listen-only");
+  assert.deepEqual(fromSandbox(submission.body), { alert: payload, captureOnly: true, mappings: [] });
+  assert.equal(routing.isListenOnlyPayload({ channel_id: "222" }, [sourceUrl]), true);
+  assert.equal(routing.isListenOnlyPayload({ sourceUrl: `${sourceUrl}/444` }, [sourceUrl]), true);
+  assert.equal(routing.isListenOnlyPayload({ sourceChannelId: "999" }, [sourceUrl]), false);
+});
+
+test("listen-only works without any post URLs or helper mappings", async () => {
+  const routing = await loadSourceRouting();
+  const sourceUrl = "https://discord.com/channels/111/222";
+  const config = routing.buildSourceConfig({ listenOnlyChannelUrls: [sourceUrl] });
+  const submission = routing.selectSubmissionForPayload({ sourceUrl }, config);
+  assert.equal(submission.allowed, true);
+  assert.equal(submission.body.captureOnly, true);
+  assert.equal(routing.selectSubmissionForPayload({ sourceChannelId: "999" }, config).allowed, false);
+});
+
 test("source routing uses popup mappings only for popup sources and keeps helper config as fallback", async () => {
   const routing = await loadSourceRouting();
   const popupMappings = [
@@ -95,4 +123,3 @@ test("source routing uses popup mappings only for popup sources and keeps helper
     text: "test alert"
   });
 });
-

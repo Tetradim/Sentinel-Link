@@ -29,6 +29,9 @@ export function createHelperController(options = {}) {
   let helperPid = null;
   let helperProcess = null;
   let watchdogProcess = null;
+  let ensureInFlight = null;
+  let shutdownInFlight = null;
+  let shutdownRequested = false;
 
   const deps = {
     isPortOpen,
@@ -41,7 +44,20 @@ export function createHelperController(options = {}) {
     ...options
   };
 
-  async function ensureHelper(request = {}) {
+  function ensureHelper(request = {}) {
+    if (shutdownRequested) {
+      return Promise.reject(new Error("helper shutdown is in progress"));
+    }
+    if (ensureInFlight) {
+      return ensureInFlight;
+    }
+    ensureInFlight = ensureHelperOnce(request).finally(() => {
+      ensureInFlight = null;
+    });
+    return ensureInFlight;
+  }
+
+  async function ensureHelperOnce(request = {}) {
     const helperToken = normalizeToken(request.helperToken ?? options.helperToken ?? process.env.HELPER_TOKEN);
     if (!helperToken) {
       throw new Error("helperToken is required to start helper");
@@ -108,7 +124,23 @@ export function createHelperController(options = {}) {
     };
   }
 
-  async function shutdown() {
+  function shutdown() {
+    if (shutdownInFlight) {
+      return shutdownInFlight;
+    }
+    shutdownRequested = true;
+    shutdownInFlight = shutdownOnce();
+    return shutdownInFlight;
+  }
+
+  async function shutdownOnce() {
+    if (ensureInFlight) {
+      try {
+        await ensureInFlight;
+      } catch {
+        // Startup already failed; continue with best-effort cleanup.
+      }
+    }
     await deps.stopWatchdog({ stopFile: watchdogStopFile, watchdogProcess });
     const pid = helperPid ?? helperProcess?.pid ?? null;
     if (pid) {

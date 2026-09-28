@@ -16,7 +16,7 @@
   "content_scripts": [
     {
       "matches": ["https://discord.com/*", "https://*.discord.com/*"],
-      "js": ["bridge_config.js", "content.js"],
+      "js": ["parser.js", "bridge_config.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

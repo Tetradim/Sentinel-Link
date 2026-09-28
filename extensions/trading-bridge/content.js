@@ -9,6 +9,7 @@ const STORAGE_DEFAULTS = {
 };
 const observedIds = new Set();
 const observedOrder = [];
+const observedRevisions = new Map();
 const MAX_OBSERVED = 2000;
 const BRIDGE_FETCH_TIMEOUT_MS = 5000;
 
@@ -77,14 +78,16 @@ function startObserver() {
     }
     if (!isCurrentChannelEnabled()) return;
     for (const record of records) {
+      if (record.type === "characterData") {
+        scanNode(record.target);
+        continue;
+      }
       for (const node of record.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          scanNode(node);
-        }
+        scanNode(node);
       }
     }
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   prepareCurrentChannel(true);
   console.info(BRIDGE_LOG_PREFIX, "observer ready");
   startHeartbeat();
@@ -161,8 +164,10 @@ function publishHeartbeat(status = "ok", details = {}) {
 function primeVisibleMessages() {
   if (!isCurrentChannelEnabled()) return;
   for (const node of document.querySelectorAll(messageSelector())) {
-    const eventId = stableEventId(node);
-    if (eventId) rememberSeen(eventId);
+    const parsed = parseMessageNode(node);
+    if (!parsed) continue;
+    rememberSeen(revisionKey(parsed));
+    observedRevisions.set(parsed.messageId, parsed.revisionHash || "");
   }
 }
 
@@ -175,14 +180,18 @@ function scanVisibleMessages() {
 
 function scanNode(node) {
   if (!isCurrentChannelEnabled()) return;
-  if (node.matches && node.matches(messageSelector())) {
-    captureMessage(node);
+  const element = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+  if (!element) return;
+  if (element.matches && element.matches(messageSelector())) {
+    captureMessage(element);
   }
-  if (node.querySelectorAll) {
-    for (const messageNode of node.querySelectorAll(messageSelector())) {
+  if (element.querySelectorAll) {
+    for (const messageNode of element.querySelectorAll(messageSelector())) {
       captureMessage(messageNode);
     }
   }
+  const closest = element.closest && element.closest(messageSelector());
+  if (closest) captureMessage(closest);
 }
 
 function messageSelector() {
@@ -191,20 +200,28 @@ function messageSelector() {
 
 function captureMessage(node) {
   if (!isCurrentChannelEnabled()) return;
-  const eventId = stableEventId(node);
-  if (!eventId || rememberSeen(eventId)) return;
+  const parsed = parseMessageNode(node);
+  if (!parsed || !parsed.messageId || rememberSeen(revisionKey(parsed))) return;
+  const previousRevision = observedRevisions.get(parsed.messageId);
+  const eventType = previousRevision && previousRevision !== parsed.revisionHash ? "updated" : "created";
+  observedRevisions.set(parsed.messageId, parsed.revisionHash || "");
 
   const payload = {
-    event_id: eventId,
+    event_id: parsed.messageId,
     channel_id: channelIdFromLocation(),
     channel_name: channelNameFromPage(),
     author_id: authorIdFromNode(node),
-    author_name: authorNameFromNode(node),
-    content: contentFromNode(node),
-    embeds: embedsFromNode(node),
-    url: location.href,
-    channel_url: channelUrlFromLocation(),
-    observed_at: new Date().toISOString(),
+    author_name: parsed.author || "Discord User",
+    author_raw: parsed.authorRaw || parsed.author || "Discord User",
+    content: parsed.text || "",
+    embeds: parsed.embeds.map((embed) => ({ ...embed, footer_text: embed.footer || "" })),
+    attachment_urls: parsed.attachmentUrls || [],
+    url: /^\d+$/.test(parsed.messageId) ? `${parsed.sourceUrl}/${parsed.messageId}` : location.href,
+    channel_url: parsed.sourceUrl || channelUrlFromLocation(),
+    observed_at: parsed.capturedAt || new Date().toISOString(),
+    timestampIso: parsed.timestampIso || "",
+    revision_hash: parsed.revisionHash || "",
+    event_type: eventType,
     source: "chrome-discord-bridge",
   };
 
@@ -217,6 +234,21 @@ function captureMessage(node) {
     console.warn(BRIDGE_LOG_PREFIX, message);
     publishHeartbeat("forward_error", { error: message });
   });
+}
+
+function parseMessageNode(node) {
+  const parser = window.DiscordCopyRepostParser;
+  if (!parser || typeof parser.extractAlertFromMessageNode !== "function") return null;
+  try {
+    return parser.extractAlertFromMessageNode(node, location.href);
+  } catch (error) {
+    console.warn(BRIDGE_LOG_PREFIX, "parser failed", errorMessage(error));
+    return null;
+  }
+}
+
+function revisionKey(parsed) {
+  return `${parsed.messageId}:${parsed.revisionHash || "initial"}`;
 }
 
 function sendBridgeRuntimeMessage(type, payload, kind) {

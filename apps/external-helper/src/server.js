@@ -50,7 +50,9 @@ async function route({ request, response, config, store, authToken }) {
         createdJobs: []
       });
     }
-    const result = await store.enqueueAlert(eventRequest.config, eventRequest.payload);
+    const result = eventRequest.captureOnly
+      ? await store.captureAlert(eventRequest.payload)
+      : await store.enqueueAlert(eventRequest.config, eventRequest.payload);
     return sendJson(response, request, 202, result);
   }
 
@@ -58,6 +60,19 @@ async function route({ request, response, config, store, authToken }) {
     const clientId = (url.searchParams.get("clientId") ?? "").trim();
     if (!clientId) {
       throw new HttpError(400, "missing_client_id", "clientId is required.");
+    }
+    const requestOrigin = String(request.headers.origin || "").toLowerCase();
+    const expectedExtensionOrigin = config.deliveryExtensionId
+      ? `chrome-extension://${config.deliveryExtensionId}`
+      : "";
+    const isCurrentExtension = expectedExtensionOrigin && requestOrigin === expectedExtensionOrigin;
+    const isOtherExtension = requestOrigin.startsWith("chrome-extension://") && !isCurrentExtension;
+    if (isOtherExtension || (config.deliveryClientId && clientId !== config.deliveryClientId && !isCurrentExtension)) {
+      throw new HttpError(
+        409,
+        "delivery_client_mismatch",
+        "This helper is reserved for the current Sentinel Link extension worker."
+      );
     }
     const job = await claimNextFreshJob(store, config, clientId);
     return sendJson(response, request, 200, job ?? { job: null });
@@ -152,11 +167,18 @@ function sanitizeConfig(config) {
 }
 
 function normalizeEventRequest(body, baseConfig) {
+  if (body && Object.hasOwn(body, "captureOnly") && typeof body.captureOnly !== "boolean") {
+    throw new HttpError(400, "invalid_request", "captureOnly must be a boolean.");
+  }
+  if (body?.captureOnly === true && !Object.hasOwn(body, "alert")) {
+    throw new HttpError(400, "invalid_request", "captureOnly requires an alert payload.");
+  }
   if (!body || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(body, "alert")) {
     return { config: baseConfig, payload: body };
   }
 
   return {
+    captureOnly: body.captureOnly === true,
     config: {
       ...baseConfig,
       mappings: Object.hasOwn(body, "mappings") ? body.mappings : baseConfig.mappings
@@ -172,6 +194,7 @@ function summarize(snapshot) {
     retry_wait: 0,
     sent: 0,
     failed: 0,
+    captured_only: snapshot.events.filter((event) => event.type === "captured_only").length,
     skipped_duplicate: snapshot.events.filter((event) => event.type === "skipped_duplicate").length
   };
 
